@@ -1,13 +1,13 @@
 definition(
-    name: "Device Health Monitor Plus",
+    name: "Device Health Monitor",
     namespace: "jdthomas24",
     author: "jdthomas24",
-    description: "Monitor device check-in health across Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable — learns each device's normal pattern and alerts you when something goes quiet. Plus: device state column, Hub Mesh hub grouping, and richer notifications.",
+    description: "Monitor device check-in health across Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable — learns each device's normal pattern and alerts you when something goes quiet. Includes device state column, Hub Mesh overview, state change tracking, and richer notifications.",
     category: "Convenience",
-    importUrl: "",
+    importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.0.9-plus",
+    version: "1.4.2",
     doNotFocus: true
 )
 
@@ -29,13 +29,13 @@ preferences {
 // ===================== LIFECYCLE ===========================
 // ============================================================
 def installed() {
-    if (debugEnabled()) log.debug "Device Health Monitor Plus installed"
+    if (debugEnabled()) log.debug "Device Health Monitor installed"
     applyCustomLabel()
     initialize()
 }
 
 def updated() {
-    if (debugEnabled()) log.debug "Device Health Monitor Plus updated"
+    if (debugEnabled()) log.debug "Device Health Monitor updated"
     applyCustomLabel()
     unschedule()
     unsubscribe()
@@ -50,7 +50,7 @@ def updated() {
 }
 
 def initialize() {
-    if (debugEnabled()) log.debug "Device Health Monitor Plus initializing"
+    if (debugEnabled()) log.debug "Device Health Monitor initializing"
     if (state.history       == null) state.history       = [:]
     if (state.health        == null) state.health        = [:]
     if (state.snoozed       == null) state.snoozed       = [:]
@@ -65,7 +65,7 @@ def initialize() {
 def debugEnabled() { return settings?.debugMode == true }
 
 def disableDebugLogging() {
-    log.info "Device Health Monitor Plus: auto-disabling debug logging after 30 minutes"
+    log.info "Device Health Monitor: auto-disabling debug logging after 30 minutes"
     app.updateSetting("debugMode", [value: false, type: "bool"])
 }
 
@@ -261,18 +261,52 @@ def getMeaningfulAttributes(device) {
         "currentStatus", "printerStatus", "status", "deviceStatus",
         "healthStatus", "connectionStatus", "operatingState", "mode"
     ]
+
+    // Device-type specific numeric attributes that are meaningful as state options.
+    // Added per device type to avoid polluting multi-sensors (motion+temp etc.)
+    // with measurement attributes they don't need in the override list.
+    // Check both typeName and device.name — Hub Mesh linked devices may report a
+    // generic typeName while preserving the original device name.
+    def driverName  = (device.typeName ?: "").toLowerCase()
+    def deviceName  = (device.name ?: "").toLowerCase()
+    def displayName = (device.displayName ?: "").toLowerCase()
+    def nameCheck   = "${driverName} ${deviceName} ${displayName}"
+
+    def isPrinter = nameCheck.contains("moonraker") || nameCheck.contains("klipper") ||
+                    nameCheck.contains("octoprint") || nameCheck.contains("bambu") ||
+                    nameCheck.contains("prusa") || nameCheck.contains("3d print") ||
+                    nameCheck.contains("printer")
+    if (isPrinter) known += ["progress", "currentLayer", "printTime", "remainingTime",
+                              "printTimeLeft", "totalLayers", "fileName"]
+
+    def isThermostat = nameCheck.contains("thermostat") || nameCheck.contains("ecobee") ||
+                       nameCheck.contains("nest") || nameCheck.contains("honeywell") ||
+                       nameCheck.contains("sinope")
+    if (isThermostat) known += ["heatingSetpoint", "coolingSetpoint", "thermostatSetpoint",
+                                 "temperature", "humidity"]
+
+    def isEV = nameCheck.contains("tesla") || nameCheck.contains("electric vehicle")
+    if (isEV) known += ["battery", "batteryLevel", "chargingState", "range", "odometer"]
+
+    def isMedia = nameCheck.contains("sonos") || nameCheck.contains("denon") ||
+                  nameCheck.contains("yamaha") || nameCheck.contains("roku") ||
+                  nameCheck.contains("apple tv") || nameCheck.contains("media player")
+    if (isMedia) known += ["trackDescription", "trackData", "mediaPlaybackStatus",
+                            "transportStatus", "volume", "level"]
+
     def found = []
     try {
         device.currentStates?.each { s ->
             if (!s?.name || s?.value == null) return
             def val = s.value.toString().trim()
             if (val in ["", "null", "0"]) return
+            // Global skip list — always excluded unless device type explicitly adds them to known
             def skipAttrs = ["battery", "batteryLastReplaced", "lastCheckin",
                              "temperature", "humidity", "illuminance", "pressure",
                              "carbonDioxide", "energy", "power", "voltage",
                              "current", "frequency", "rssi", "lqi", "driver",
                              "notPresentCounter", "restoredCounter", "firmware"]
-            if (s.name in skipAttrs) return
+            if (s.name in skipAttrs && !(s.name in known)) return
             if (val.isNumber() && !(s.name in known)) return
             found << s.name
         }
@@ -856,7 +890,7 @@ def mainPage() {
     dynamicPage(name: "mainPage", title: "", install: true, uninstall: true) {
 
         def hasCustomName = settings?.customAppName?.trim()
-        def currentLabel  = app.label ?: "Device Health Monitor Plus"
+        def currentLabel  = app.label ?: "Device Health Monitor"
         def appNameTitle  = "<b>App Display Name</b> — <span style='color:blue;'>${currentLabel}</span>"
         section(appNameTitle, hideable: true, hidden: true) {
             paragraph "Enter a name to rename this app in your Hubitat app list."
@@ -1013,7 +1047,7 @@ def mainPage() {
             href(name: "toInfoPage", page: "infoPage",
                  title: "📖 App Guide & Reference",
                  description: "Health scoring, state tracking, and troubleshooting explained")
-            href url: "https://community.hubitat.com/t/beta-device-health-monitor/163229",
+            href url: "https://community.hubitat.com/t/release-device-health-monitor/163229",
                  style: "external",
                  title: "💬 Hubitat Community Thread",
                  description: "Questions, feedback, and release notes"
@@ -1023,7 +1057,7 @@ def mainPage() {
             input "debugMode", "bool",
                   title: "Debug Logging (auto-disables after 30 min)",
                   defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor Plus v1.0.9-plus</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.4.2</span>"
         }
     }
 }
@@ -1344,17 +1378,53 @@ def formatStateDisplay(stateInfo) {
     def color = stateInfo.color
     switch (color) {
         case "#c62828":
-            return "<span style='background:#fee2e2; color:#b91c1c; padding:2px 9px; border-radius:10px; font-weight:700; font-size:12px; display:inline-block;'>${label}</span>"
+            return "<span style='background:#fee2e2; color:#b91c1c; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
         case "#e65100":
-            return "<span style='background:#fff3e0; color:#c2410c; padding:2px 9px; border-radius:10px; font-weight:700; font-size:12px; display:inline-block;'>${label}</span>"
+            return "<span style='background:#fff3e0; color:#c2410c; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
         case "#1565c0":
-            return "<span style='background:#dbeafe; color:#1d4ed8; padding:2px 9px; border-radius:10px; font-weight:700; font-size:12px; display:inline-block;'>${label}</span>"
+            return "<span style='background:#dbeafe; color:#1d4ed8; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
         case "#8b5cf6":
-            return "<span style='background:#f3e8ff; color:#7c3aed; padding:2px 9px; border-radius:10px; font-weight:700; font-size:12px; display:inline-block;'>${label}</span>"
+            return "<span style='background:#f3e8ff; color:#7c3aed; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
         case "#16a34a":
-            return "<span style='background:#dcfce7; color:#15803d; padding:2px 9px; border-radius:10px; font-weight:700; font-size:12px; display:inline-block;'>${label}</span>"
+            return "<span style='background:#dcfce7; color:#15803d; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
         default:
-            return "<span style='color:#94a3b8;'>${label}</span>"
+            return "<span style='color:#4b5563;font-weight:600;font-size:13px;'>${label}</span>"
+    }
+}
+
+// Renders state for the override page — always uses a pill, even for inactive/gray states.
+// This ensures OFF/Inactive/Locked are clearly readable in the override list context.
+def formatStateDisplayInput(stateInfo) {
+    if (!stateInfo) return "—"
+    def label = stateInfo.label
+    def color = stateInfo.color
+    switch (color) {
+        case "#c62828": return "<b><span style='color:#b91c1c;font-size:13px;'>${label}</span></b>"
+        case "#e65100": return "<b><span style='color:#c2410c;font-size:13px;'>${label}</span></b>"
+        case "#1565c0": return "<b><span style='color:#1d4ed8;font-size:13px;'>${label}</span></b>"
+        case "#8b5cf6": return "<b><span style='color:#7c3aed;font-size:13px;'>${label}</span></b>"
+        case "#16a34a": return "<b><span style='color:#15803d;font-size:13px;'>${label}</span></b>"
+        default:        return "<b><span style='color:#1f2937;font-size:13px;'>${label}</span></b>"
+    }
+}
+
+def formatStateDisplayOverride(stateInfo) {
+    if (!stateInfo) return "—"
+    def label = stateInfo.label
+    def color = stateInfo.color
+    switch (color) {
+        case "#c62828":
+            return "<b><span style='color:#b91c1c;'>[${label}]</span></b>"
+        case "#e65100":
+            return "<b><span style='color:#c2410c;'>[${label}]</span></b>"
+        case "#1565c0":
+            return "<b><span style='color:#1d4ed8;'>[${label}]</span></b>"
+        case "#8b5cf6":
+            return "<b><span style='color:#7c3aed;'>[${label}]</span></b>"
+        case "#16a34a":
+            return "<b><span style='color:#15803d;'>[${label}]</span></b>"
+        default:
+            return "<b><span style='color:#374151;'>[${label}]</span></b>"
     }
 }
 
@@ -1710,8 +1780,8 @@ def protocolOverridePage() {
                     def currentOverride = settings["protocolOverride_${device.id}"] ?: "Auto-detect"
                     def isOverridden    = currentOverride != "Auto-detect"
                     def statusDisplay   = isOverridden
-                        ? "<span style='color:#a855f7; font-weight:bold;'>⚙️ Override Active: ${currentProtocol}</span>"
-                        : "<span style='color:#475569;'>Auto-detected: <span style='color:${getProtocolColor(currentProtocol)};'>${currentProtocol}</span></span>"
+                        ? "<span style='color:#a855f7; font-weight:bold;'>⚙️ Override Active: <span style='background:${getProtocolColor(currentProtocol)}22;color:${getProtocolColor(currentProtocol)};font-weight:700;font-size:13px;padding:2px 8px;border-radius:8px;'>${currentProtocol}</span></span>"
+                        : "<span style='color:#374151;font-size:13px;font-weight:500;'>Auto-detected: <span style='background:${getProtocolColor(currentProtocol)}22;color:${getProtocolColor(currentProtocol)};font-weight:700;font-size:13px;padding:2px 8px;border-radius:8px;'>${currentProtocol}</span></span>"
                     input "protocolOverride_${device.id}", "enum",
                           title: "<b>${device.displayName}</b> — ${statusDisplay}",
                           options: ["Auto-detect", "Zigbee", "Z-Wave", "Matter",
@@ -1741,9 +1811,11 @@ def protocolOverridePage() {
                     def currentLabel     = autoResult ? autoResult.label : "—"
                     def attrs            = getMeaningfulAttributes(device)
                     def options          = ["Auto-detect"] + attrs
+                    def overrideStateResult = currentOverride != "Auto-detect" ? getOverrideStateDisplay(device, currentOverride) : null
+                    def overrideValueDisplay = overrideStateResult ? formatStateDisplay(overrideStateResult) : "<span style='color:#1f2937;font-weight:600;font-size:13px;'>${currentOverride}</span>"
                     def currentDisplay   = currentOverride == "Auto-detect"
-                        ? "<span style='color:#475569;'>Current State: ${currentLabel}</span>"
-                        : "<span style='color:#a855f7; font-weight:bold;'>⚙️ Override Active: ${currentOverride}</span>"
+                        ? "<span style='color:#374151;font-size:13px;font-weight:500;'>Auto-detected: ${autoResult ? formatStateDisplay(autoResult) : "<span style='color:#1f2937;font-weight:600;font-size:13px;'>${currentLabel}</span>"}</span>"
+                        : "<span style='color:#a855f7; font-weight:bold;'>⚙️ Override Active: ${overrideValueDisplay}</span>"
                     input "stateAttrOverride_${device.id}", "enum",
                           title: "<b>${device.displayName}</b> — ${currentDisplay}",
                           options: options,
@@ -2048,7 +2120,7 @@ def infoPage(Map params = [:]) {
 
         section("<b>📡 What's New in DHM Plus</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "<b>Device Health Monitor Plus</b> adds four enhancements on top of DHM v1.3.12:<br><br>" +
+                      "<b>Device Health Monitor v1.4.2</b> adds four enhancements introduced since v1.3.12:<br><br>" +
                       "1. <b>State Column</b> — Activity Summary now shows each device's current ON/OFF/motion/contact/lock/presence state inline, color-coded for quick scanning.<br><br>" +
                       "2. <b>State Changed Column</b> — Shows how long ago the device last changed state, separate from Last Seen. A motion sensor can check in frequently but still be stuck reporting the same state. Note: updates on each scan cycle, not in real time.<br><br>" +
                       "3. <b>Hub Mesh Overview</b> — A dedicated page grouping Hub Mesh devices by their source hub with per-hub health banners. Useful when you have many Hub Mesh devices across multiple linked hubs.<br><br>" +
