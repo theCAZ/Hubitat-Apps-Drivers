@@ -7,7 +7,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.4.2",
+    version: "1.4.3",
     doNotFocus: true
 )
 
@@ -88,16 +88,25 @@ def snoozeDevice(deviceId) {
     def until = now() + (hours * 3600000)
     if (!state.snoozed) state.snoozed = [:]
     state.snoozed[deviceId] = until
+    // FIX 1.4.3: force top-level reassignment so Hubitat persists the change
+    state.snoozed = state.snoozed
 }
 
-def unsnoozeDevice(deviceId) { state.snoozed?.remove(deviceId) }
+def unsnoozeDevice(deviceId) {
+    state.snoozed?.remove(deviceId)
+    // FIX 1.4.3: force top-level reassignment so Hubitat persists the removal
+    state.snoozed = state.snoozed ?: [:]
+}
 
 def isDeviceSnoozed(deviceId) {
     if (!snoozeEnabled()) return false
     def until = state.snoozed?.get(deviceId)
     if (!until) return false
     if (until >= now()) return true
-    state.snoozed.remove(deviceId)
+    // FIX 1.4.3: expired snooze — remove and reassign
+    def s = state.snoozed ?: [:]
+    s.remove(deviceId)
+    state.snoozed = s
     return false
 }
 
@@ -262,11 +271,6 @@ def getMeaningfulAttributes(device) {
         "healthStatus", "connectionStatus", "operatingState", "mode"
     ]
 
-    // Device-type specific numeric attributes that are meaningful as state options.
-    // Added per device type to avoid polluting multi-sensors (motion+temp etc.)
-    // with measurement attributes they don't need in the override list.
-    // Check both typeName and device.name — Hub Mesh linked devices may report a
-    // generic typeName while preserving the original device name.
     def driverName  = (device.typeName ?: "").toLowerCase()
     def deviceName  = (device.name ?: "").toLowerCase()
     def displayName = (device.displayName ?: "").toLowerCase()
@@ -300,7 +304,6 @@ def getMeaningfulAttributes(device) {
             if (!s?.name || s?.value == null) return
             def val = s.value.toString().trim()
             if (val in ["", "null", "0"]) return
-            // Global skip list — always excluded unless device type explicitly adds them to known
             def skipAttrs = ["battery", "batteryLastReplaced", "lastCheckin",
                              "temperature", "humidity", "illuminance", "pressure",
                              "carbonDioxide", "energy", "power", "voltage",
@@ -389,7 +392,6 @@ def getOverrideStateDisplay(device, attrName) {
 
 def getCurrentStateDisplay(device) {
     try {
-        // ── Manual state attribute override ──────────────────────
         def attrOverride = settings["stateAttrOverride_${device.id}"]
         if (attrOverride && attrOverride != "Auto-detect") {
             def overrideResult = getOverrideStateDisplay(device, attrOverride)
@@ -398,7 +400,6 @@ def getCurrentStateDisplay(device) {
 
         def driverName = (device.typeName ?: "").toLowerCase()
 
-        // ── Capability-first devices ─────────────────────────────
         def isContactDevice = driverName.contains("contact") ||
                               driverName.contains("door sensor") ||
                               driverName.contains("window sensor")
@@ -439,7 +440,6 @@ def getCurrentStateDisplay(device) {
             }
         }
 
-        // ── Presence-first devices ────────────────────────────────
         def isPresenceDevice = driverName.contains("life360") ||
                                driverName.contains("presence") ||
                                driverName.contains("arrival") ||
@@ -455,7 +455,6 @@ def getCurrentStateDisplay(device) {
             }
         }
 
-        // ── 3D Printer / Octoprint / Bambu / Prusa / Moonraker ──
         def isPrinter = driverName.contains("moonraker") ||
                         driverName.contains("klipper") ||
                         driverName.contains("octoprint") ||
@@ -483,7 +482,6 @@ def getCurrentStateDisplay(device) {
             }
         }
 
-        // ── Water / Moisture ──────────────────────────────────────
         def water = device.currentValue("water")
         if (water != null) {
             def isWet = water.toString().toLowerCase() == "wet"
@@ -493,7 +491,6 @@ def getCurrentStateDisplay(device) {
                     type: "water"]
         }
 
-        // ── Smoke ─────────────────────────────────────────────────
         def smoke = device.currentValue("smoke")
         if (smoke != null) {
             def isDetected = smoke.toString().toLowerCase() == "detected"
@@ -503,7 +500,6 @@ def getCurrentStateDisplay(device) {
                     type: "smoke"]
         }
 
-        // ── Carbon Monoxide ───────────────────────────────────────
         def co = device.currentValue("carbonMonoxide")
         if (co != null) {
             def isDetected = co.toString().toLowerCase() == "detected"
@@ -513,7 +509,6 @@ def getCurrentStateDisplay(device) {
                     type: "carbonMonoxide"]
         }
 
-        // ── Switch / Outlet / Dimmer ──────────────────────────────
         def sw = device.currentValue("switch")
         if (sw != null) {
             def isOn = sw.toString().toLowerCase() == "on"
@@ -523,7 +518,6 @@ def getCurrentStateDisplay(device) {
                     type: "switch"]
         }
 
-        // ── Presence (non-driver-name-detected) ───────────────────
         def presence = device.currentValue("presence")
         if (presence != null) {
             def isPresent = presence.toString().toLowerCase() == "present"
@@ -533,7 +527,6 @@ def getCurrentStateDisplay(device) {
                     type: "presence"]
         }
 
-        // ── Contact ───────────────────────────────────────────────
         def contact = device.currentValue("contact")
         if (contact != null) {
             def isOpen = contact.toString().toLowerCase() == "open"
@@ -543,7 +536,6 @@ def getCurrentStateDisplay(device) {
                     type: "contact"]
         }
 
-        // ── Motion ────────────────────────────────────────────────
         def motion = device.currentValue("motion")
         if (motion != null) {
             def isActive = motion.toString().toLowerCase() == "active"
@@ -553,7 +545,6 @@ def getCurrentStateDisplay(device) {
                     type: "motion"]
         }
 
-        // ── Lock ──────────────────────────────────────────────────
         def lock = device.currentValue("lock")
         if (lock != null) {
             def isUnlocked = lock.toString().toLowerCase() == "unlocked"
@@ -563,7 +554,6 @@ def getCurrentStateDisplay(device) {
                     type: "lock"]
         }
 
-        // ── Tamper ────────────────────────────────────────────────
         def tamper = device.currentValue("tamper")
         if (tamper != null) {
             def isDetected = tamper.toString().toLowerCase() == "detected"
@@ -573,7 +563,6 @@ def getCurrentStateDisplay(device) {
                     type: "tamper"]
         }
 
-        // ── Shock / Vibration ─────────────────────────────────────
         def shock = device.currentValue("shock")
         if (shock != null) {
             def isDetected = shock.toString().toLowerCase() == "detected"
@@ -583,7 +572,6 @@ def getCurrentStateDisplay(device) {
                     type: "shock"]
         }
 
-        // ── Sleep sensor ──────────────────────────────────────────
         def sleeping = device.currentValue("sleeping")
         if (sleeping != null) {
             def isSleeping = sleeping.toString().toLowerCase() == "sleeping"
@@ -593,7 +581,6 @@ def getCurrentStateDisplay(device) {
                     type: "sleeping"]
         }
 
-        // ── Valve ─────────────────────────────────────────────────
         def valve = device.currentValue("valve")
         if (valve != null) {
             def isOpen = valve.toString().toLowerCase() == "open"
@@ -603,7 +590,6 @@ def getCurrentStateDisplay(device) {
                     type: "valve"]
         }
 
-        // ── Garage Door / Door Control ────────────────────────────
         def door = device.currentValue("door")
         if (door != null) {
             def isOpen = door.toString().toLowerCase() in ["open", "opening"]
@@ -613,7 +599,6 @@ def getCurrentStateDisplay(device) {
                     type: "door"]
         }
 
-        // ── Window Shade / Blind ──────────────────────────────────
         def shade = device.currentValue("windowShade")
         if (shade != null) {
             def isOpen = shade.toString().toLowerCase() in ["open", "opening", "partially open"]
@@ -623,10 +608,6 @@ def getCurrentStateDisplay(device) {
                     type: "windowShade"]
         }
 
-        // ── LAN / Cloud integration smart fallback ────────────────
-        // Only called for LAN, Hub Mesh, and unresolved protocols.
-        // Applying LAN-specific attribute heuristics to Zigbee/Z-Wave
-        // devices could produce misleading state labels.
         def protocol = getProtocol(device)
         def isLANType = protocol in ["LAN", "Hub Mesh", "Hub Mesh (Zigbee)",
                                      "Hub Mesh (Z-Wave)", "Hub Mesh (Matter)", "Unknown"]
@@ -635,11 +616,6 @@ def getCurrentStateDisplay(device) {
             if (lanResult != null) return lanResult
         }
 
-        // ── Measurement fallback ──────────────────────────────────
-        // Only reached for devices with no standard capability attributes —
-        // pure temp/humidity/CO2/air quality sensors land here.
-        // Primary capabilities (motion, contact, switch, etc.) always win above.
-        // Showing a measurement is more useful than an empty "—" column.
         def temp = device.currentValue("temperature")
         if (temp != null) {
             def unit = location?.temperatureScale ?: "F"
@@ -660,10 +636,6 @@ def getCurrentStateDisplay(device) {
     return null
 }
 
-// ── LAN / Cloud smart attribute inspector ────────────────────
-// Inspects all current states on a device and returns the most
-// meaningful one based on a priority-ranked attribute list.
-// Only called for LAN, Hub Mesh, and unresolved protocol devices.
 def getLANStateDisplay(device) {
     try {
         def currentStates = device.currentStates
@@ -676,7 +648,6 @@ def getLANStateDisplay(device) {
 
         def driverName = (device.typeName ?: "").toLowerCase()
 
-        // ── Thermostat / HVAC ─────────────────────────────────────
         def isThermostat = driverName.contains("thermostat") ||
                            driverName.contains("ecobee") ||
                            driverName.contains("nest") ||
@@ -707,7 +678,6 @@ def getLANStateDisplay(device) {
             }
         }
 
-        // ── Media / AV ────────────────────────────────────────────
         def isMedia = driverName.contains("sonos") ||
                       driverName.contains("denon") ||
                       driverName.contains("yamaha") ||
@@ -734,7 +704,6 @@ def getLANStateDisplay(device) {
             }
         }
 
-        // ── EV / Tesla ────────────────────────────────────────────
         def isEV = driverName.contains("tesla") ||
                    driverName.contains("electric vehicle") ||
                    stateMap.containsKey("chargingState") ||
@@ -758,7 +727,6 @@ def getLANStateDisplay(device) {
             }
         }
 
-        // ── Shelly / Relay / Power Meter ──────────────────────────
         def isShelly = driverName.contains("shelly") ||
                        stateMap.containsKey("power") ||
                        stateMap.containsKey("energy")
@@ -771,7 +739,6 @@ def getLANStateDisplay(device) {
             return [label: label, color: isOn ? "#1565c0" : "#c0c4cc", isAlert: false, type: "shelly"]
         }
 
-        // ── Garage Door / MyQ ─────────────────────────────────────
         if (stateMap.containsKey("door")) {
             def d = stateMap["door"].toLowerCase()
             def isOpen = d in ["open", "opening"]
@@ -780,7 +747,6 @@ def getLANStateDisplay(device) {
                     isAlert: isOpen, type: "door"]
         }
 
-        // ── Generic ranked fallback ───────────────────────────────
         if (debugEnabled()) log.debug "getLANStateDisplay: ${device.displayName} — available attrs: ${stateMap.keySet().sort().join(', ')}"
         def rankedAttrs = [
             "status", "deviceStatus", "healthStatus", "connectionStatus",
@@ -821,21 +787,25 @@ def updateStateTracking(device) {
         if (!stateInfo) return
 
         def currentVal = stateInfo.label
-        def tracked    = state.stateHistory[id]
+        // FIX 1.4.3: pull a local copy, mutate, then reassign to top level
+        def sh         = state.stateHistory ?: [:]
+        def tracked    = sh[id]
 
         if (!tracked) {
-            state.stateHistory[id] = [
+            sh[id] = [
                 lastValue:   currentVal,
                 lastChanged: now()
             ]
+            state.stateHistory = sh
             return
         }
 
         if (tracked.lastValue != currentVal) {
-            state.stateHistory[id] = [
+            sh[id] = [
                 lastValue:   currentVal,
                 lastChanged: now()
             ]
+            state.stateHistory = sh
             if (debugEnabled()) log.debug "${device.displayName}: state changed to ${currentVal}"
         }
     } catch (e) {
@@ -941,7 +911,6 @@ def mainPage() {
             }
         }
 
-        // ── Monitoring Settings ──────────────────────────────────
         def scanIntervalLabel = ["0.5": "Every 30 min", "1": "Hourly", "3": "Every 3 h", "6": "Every 6 h"]
         def currentScan      = scanIntervalLabel[settings?.scanInterval ?: "3"] ?: "Every 3 h"
         def currentThreshold = settings?.offlineThresholdHours ?: 72
@@ -987,7 +956,6 @@ def mainPage() {
             }
         }
 
-        // ── Notifications ────────────────────────────────────────
         def notifOn           = settings?.enablePush != false
         def notifSectionTitle = "<b>Notifications</b> — <span style='color:${notifOn ? "blue" : "red"};'>${notifOn ? "ON" : "OFF"}</span>"
         section(notifSectionTitle, hideable: true, hidden: true) {
@@ -1057,7 +1025,7 @@ def mainPage() {
             input "debugMode", "bool",
                   title: "Debug Logging (auto-disables after 30 min)",
                   defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.4.2</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.4.3</span>"
         }
     }
 }
@@ -1122,8 +1090,9 @@ def scanAllDevices() {
     if (!devList) return
     if (debugEnabled()) log.debug "Running scan for ${devList.size()} device(s)"
 
-    // Purge orphaned state entries for devices no longer in the monitored list
     def activeIds = devList.collect { it.id as String } as Set
+
+    // FIX 1.4.3: purge orphaned entries using local copy + top-level reassignment
     ["history", "health", "verifying", "stateHistory"].each { stateKey ->
         def map = state[stateKey]
         if (map instanceof Map) {
@@ -1135,10 +1104,14 @@ def scanAllDevices() {
             }
         }
     }
+
+    // FIX 1.4.3: purge orphaned snoozes using local copy + top-level reassignment
     if (state.snoozed instanceof Map) {
-        def staleSnoozed = state.snoozed.keySet().findAll { !(it in activeIds) }
+        def snoozedCopy = state.snoozed
+        def staleSnoozed = snoozedCopy.keySet().findAll { !(it in activeIds) }
         if (staleSnoozed) {
-            staleSnoozed.each { state.snoozed.remove(it) }
+            staleSnoozed.each { snoozedCopy.remove(it) }
+            state.snoozed = snoozedCopy
             if (debugEnabled()) log.debug "Purged ${staleSnoozed.size()} orphaned snooze entr${staleSnoozed.size() == 1 ? 'y' : 'ies'}"
         }
     }
@@ -1189,6 +1162,7 @@ def scanAllDevices() {
                     }
                 }
                 data.protocol = protocol
+                // history reassignment already present — preserving as-is
                 state.history[id] = data
                 updateHealth(device)
             }
@@ -1296,7 +1270,6 @@ def getHealthDisplay(device) {
             ? "🔴 Poor"
             : "💀 <span style='color:#991b1b;font-weight:bold;'>Offline</span>"
 
-        // FIX: Low Activity Device shown on Poor/Offline only — not on Excellent/Good
         def lowActivity = isLowActivity(device.id as String)
         def lowSuffix   = lowActivity ? " <span style='color:#94a3b8;font-size:10px;'>ℹ️ Low Activity Device</span>" : ""
 
@@ -1314,8 +1287,6 @@ def getHealthDisplay(device) {
             default:                  return "${baseDisplay}${lowSuffix}"
         }
     }
-    // FIX: Low Activity Device only shown on Fair — not on Excellent/Good
-    // A device checking in on schedule cannot meaningfully also be flagged as low activity
     switch (h) {
         case "Excellent": return "🟢 Excellent"
         case "Good":      return "🟢 Good"
@@ -1367,11 +1338,6 @@ def formatInterval(minutes) {
     return "${(m / 1440).toInteger()}d ${((m % 1440) / 60).toInteger()}h"
 }
 
-
-// Renders a state label as a colored badge.
-// Alert states (red/orange) get a pill badge with background for maximum visibility.
-// Active states (blue) get bright color + bold but no badge — less critical.
-// Inactive states (gray) render as plain muted text.
 def formatStateDisplay(stateInfo) {
     if (!stateInfo) return "—"
     def label = stateInfo.label
@@ -1392,8 +1358,6 @@ def formatStateDisplay(stateInfo) {
     }
 }
 
-// Renders state for the override page — always uses a pill, even for inactive/gray states.
-// This ensures OFF/Inactive/Locked are clearly readable in the override list context.
 def formatStateDisplayInput(stateInfo) {
     if (!stateInfo) return "—"
     def label = stateInfo.label
@@ -1571,8 +1535,6 @@ def hubMeshSummaryPage() {
             def groups = buildHubMeshSummary()
             def hubIp  = location?.hub?.localIP ?: ""
 
-            // Source hub detection note — shown at top since all devices will show "Remote Hub"
-            // on current Hubitat firmware. Better to set expectations immediately.
             paragraph rawHtml: true, "<div style='background-color:#f8f0ff; border-left:3px solid #8b5cf6; padding:6px 10px; border-radius:0; font-size:12px; color:#6d28d9; margin-bottom:8px;'>ℹ️ Source hub detection is not supported on current Hubitat firmware (tested on C-8 Pro v2.5.0.126–128). All Hub Mesh devices show as \"Remote Hub\" — this does not affect health monitoring. Grouping will improve if Hubitat exposes hub name data in a future firmware release.</div>"
 
             def bannerHtml = ""
@@ -1761,7 +1723,6 @@ def protocolOverridePage() {
 
     dynamicPage(name: "protocolOverridePage", title: "🔧 Device Overrides", install: false) {
 
-        // ── Protocol Overrides ────────────────────────────────────
         section("") {
             paragraph "<div style='background-color:#fdf4ff; border-left:4px solid #a855f7; padding:10px 12px; border-radius:3px;'>" +
                       "<span style='font-size:15px; font-weight:bold; color:#4a1772;'>🔀 Protocol Overrides</span><br>" +
@@ -1792,7 +1753,6 @@ def protocolOverridePage() {
             }
         }
 
-        // ── State Attribute Overrides ─────────────────────────────
         section("") {
             paragraph "<div style='background-color:#fdf4ff; border-left:4px solid #a855f7; padding:10px 12px; border-radius:3px; margin-top:8px;'>" +
                       "<span style='font-size:15px; font-weight:bold; color:#4a1772;'>📌 State Attribute Overrides</span><br>" +
@@ -1978,17 +1938,26 @@ def resetHistoryConfirmPage() {
                 resetHistoryDevices.each { deviceId ->
                     def device = devList.find { it.id == deviceId }
                     if (device) {
-                        // FIX: seed block matches Plus's trimmed history structure
-                        // (no lastCheckin or missedCheckins — those fields were retired in Plus)
-                        state.history[device.id] = [
+                        // FIX 1.4.3: use remove() instead of null assignment to keep stateHistory clean
+                        def h = state.history ?: [:]
+                        h[device.id] = [
                             lastSeen:     now(),
                             samples:      [],
                             avgInterval:  null,
                             userInterval: state.history?.get(device.id)?.userInterval,
                             protocol:     getProtocol(device)
                         ]
-                        state.health[device.id]       = "Pending"
-                        state.stateHistory[device.id] = null
+                        state.history = h
+
+                        def health = state.health ?: [:]
+                        health[device.id] = "Pending"
+                        state.health = health
+
+                        // FIX 1.4.3: remove instead of null-assigning to prevent map pollution
+                        def sh = state.stateHistory ?: [:]
+                        sh.remove(device.id)
+                        state.stateHistory = sh
+
                         resetNames << device.displayName
                         successCount++
                     }
@@ -2075,7 +2044,6 @@ def scheduledSummary() {
         if (!isDeviceSnoozed(device.id as String)) {
             def h = state.health?.get(device.id) ?: "Pending"
             if (sections.containsKey(h)) {
-                // FIX: only include state brackets when state is available
                 def stateInfo = getCurrentStateDisplay(device)
                 def stateStr  = stateInfo ? " [${stateInfo.label}]" : ""
                 def lastStr   = state.history?.get(device.id)?.lastSeen
@@ -2086,7 +2054,6 @@ def scheduledSummary() {
         }
     }
 
-    // FIX: use settings?.suppressEmptyReport instead of bare variable reference
     if (settings?.suppressEmptyReport) {
         def hasContent = sections.any { h, data -> data.enabled && data.list }
         if (!hasContent) return
@@ -2118,7 +2085,19 @@ def scheduledSummary() {
 def infoPage(Map params = [:]) {
     dynamicPage(name: "infoPage", title: "App Guide & Reference", install: false) {
 
-        section("<b>📡 What's New in DHM Plus</b>") {
+        section("<b>📡 What's New in v1.4.3</b>") {
+            paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
+                      "<b>Device Health Monitor v1.4.3</b> — internal reliability improvements. No user-facing changes.<br><br>" +
+                      "<b>State persistence fixes (maintenance release):</b><br>" +
+                      "• Snooze add/remove/expiry now uses correct top-level state reassignment — snoozes are guaranteed to persist across hub reboots and app updates<br>" +
+                      "• Orphaned snooze cleanup during scans now correctly reassigns the snoozed map<br>" +
+                      "• State change tracking now uses a local copy + top-level reassign pattern, preventing potential missed updates<br>" +
+                      "• Device history reset now uses <code>remove()</code> instead of null assignment, preventing null entries accumulating in the stateHistory map<br><br>" +
+                      "These fixes address edge cases in Hubitat's state serialization that could cause snoozes or state-change timestamps to not survive a hub reboot. " +
+                      "All existing device history, health scores, snoozes, and overrides are preserved — no re-learning required.</div>"
+        }
+
+        section("<b>📡 What's New in v1.4.2</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
                       "<b>Device Health Monitor v1.4.2</b> adds four enhancements introduced since v1.3.12:<br><br>" +
                       "1. <b>State Column</b> — Activity Summary now shows each device's current ON/OFF/motion/contact/lock/presence state inline, color-coded for quick scanning.<br><br>" +
