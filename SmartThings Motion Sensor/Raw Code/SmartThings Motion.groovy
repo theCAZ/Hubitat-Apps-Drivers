@@ -30,12 +30,15 @@ Changes in 1.7.6:
 - Temperature events fully suppressed (no log, no event) when enableTemp is off
 - configure() no longer called on every updated() save — only on relevant
   settings changes to avoid interrupting device reporting cycle
+- Fixed driverVersion() returning "1.7.5" (was mismatched with header)
+- Added isStateChange: true to temperature sendEvent so repeated identical
+  readings are still logged — prevents gaps in home page temperature graphs
 */
 
 import hubitat.zigbee.clusters.iaszone.ZoneStatus
 import hubitat.zigbee.zcl.DataType
 
-def driverVersion() { return "1.7.5" }
+def driverVersion() { return "1.7.6" }
 
 metadata {
     definition(
@@ -209,7 +212,9 @@ def parse(String description) {
         Double offset = tempAdj ?: 0
         def temp = (evt.value + offset).round(2)
         if (infoLogging) log.info "${device.displayName}: Temperature ${temp}°${evt.unit}"
-        sendEvent(name: "temperature", value: temp, unit: evt.unit)
+        // v1.7.6: isStateChange: true ensures repeated identical readings are still
+        // logged as events — prevents gaps in home page temperature graphs
+        sendEvent(name: "temperature", value: temp, unit: evt.unit, isStateChange: true)
         return
     }
 }
@@ -298,3 +303,4 @@ void sendZigbeeCommands(List cmds) {
     if (!cmds) return
     sendHubCommand(new hubitat.device.HubMultiAction(cmds, hubitat.device.Protocol.ZIGBEE))
 }
+
