@@ -86,8 +86,10 @@ metadata {
         attribute "healthStatus", "enum", ["offline", "online"]
         attribute "roomsList", "string"
         attribute "scenesList", "string"
-        // ADDED: compact HTML status tile — enable in preferences
+        // ADDED: full HTML tile for device page
         attribute "html", "string"
+        // ADDED: compact dashboard tile — sorts to bottom of attribute list as 'xxTile'
+        attribute "xxTile", "string"
 	}
 }
 
@@ -102,8 +104,9 @@ preferences {
     input(name:"cleanAttributeDisable", type:"bool", title: "Disable chatty cleanPercent, cleanArea, cleanPercent events:", defaultValue: false, width:4)
     input(name:"deviceInfoDisable", type:"bool", title: "Disable Info logging:", defaultValue: false, width:4)
     input(name:"deviceDebugEnable", type:"bool", title: "Enable Debug logging:", defaultValue: false, width:4)
-    // ADDED: HTML tile toggle
-    input(name:"tileEnable", type:"bool", title: "Enable HTML status tile (html attribute):", defaultValue: false, width:4)
+    // ADDED: tile preferences
+    input(name:"tileEnable", type:"bool", title: "Enable HTML status tile (html attribute — device page):", defaultValue: false, width:4)
+    input(name:"xxTileEnable", type:"bool", title: "Enable compact dashboard tile (xxTile attribute — dashboard):", defaultValue: false, width:4)
     //input(name:"deviceTraceEnable", type:"bool", title: "Enable Trace logging:", defaultValue: false, width:4)
 }
 
@@ -244,9 +247,7 @@ void getHomeDataCallback() {
     logDebug "device id is ${getDeviceId()}"
     
     Boolean deviceOnline = !!(getHomeDataResult()?.devices?.find{ it.duid?.toString() == getDeviceId() }?.online)
-    //processEvent("wifi", (deviceOnline ? "online" : "offline"))
     if(!deviceOnline) {
-        //logWarn "wifi is offline"
         processEvent("error_code", 256)
         setHealthStatusEvent(false)
         qClear()
@@ -425,10 +426,12 @@ void processEvent(String name, def value) {
         //sendEventX(name: "wifi", value: value, descriptionText: "wifi set to $value")
         break    
     case "rooms":
+        // raw rooms JSON intentionally not sent as attribute - use roomsList
         String roomsList = value?.sort{ a,b -> a.key.toInteger() <=> b.key.toInteger() }?.findAll{ k,v -> v != null }?.collect{ k,v -> "$k: $v" }?.join(" | ")
         sendEventX(name: "roomsList", value: roomsList)
         break
     case "scenes":
+        // raw scenes JSON intentionally not sent as attribute - use scenesList
         String scenesList = value?.sort{ a,b -> a.key.toInteger() <=> b.key.toInteger() }?.collect{ k,v -> "$k: $v" }?.join(" | ")
         sendEventX(name: "scenesList", value: scenesList)
         break
@@ -589,12 +592,14 @@ void processEvent(String name, def value) {
 void processMsg(Map message) {
     logDebug "executing 'processMsg($message)'"
     message?.dps?.each { key,value ->        
+        // look up id and find the 'code' that was mapped in the home data. duid is used find the productID. 
         Map home = getHomeDataResult()
         String duid = getDeviceId()        
         String productId = home?.devices?.find{ it.duid?.toString() == duid?.toString() }?.productId
         String code = home?.products?.find{ it.id == productId }?.schema?.find { it.id?.toString() == key?.toString() }?.code
         
         if(code=="rpc_response") {
+            // we have good connection to device since we got a message back from it.
             setHealthStatusEvent(true)
             
             def jsonValue = null
@@ -608,6 +613,7 @@ void processMsg(Map message) {
                 if(settings?.deviceDebugEnable) logWarn "message unknown: $jsonValue"
                 return
             }           
+            // lets get our command that sent this request and we can start the queue up again.
             Map cmd = qPop()
             executeQueue()
     
@@ -618,13 +624,14 @@ void processMsg(Map message) {
                         result.switch=((result?.in_cleaning ?: 0).toInteger() != 0 || (result?.is_locating ?: 0).toInteger() != 0 || (result?.is_exploring ?: 0).toInteger() != 0) ? "on" : "off"
                         if(result?.battery?.toInteger()==100 && result?.state?.toInteger()==8) result.state=100
                         if(result?.clean_percent?.toInteger()==0 && result?.clean_area?.toInteger()>1) result.clean_percent=100
-                        if(!stateDoNotRefreshCodes.contains(result.state)) { scheduleRefresh(60) }
+                        if(!stateDoNotRefreshCodes.contains(result.state)) { scheduleRefresh(60) } // some units don't send real time dps events
                     }
                     logDebug "processing $result"
                     result?.each{ c,v -> processEvent(c,v) }
                 }
-                // ADDED: debounced tile update after status/consumable response
-                if(settings?.tileEnable) runIn(2, "updateTile")
+                // ADDED: trigger tile updates after status/consumable response
+                if(settings?.tileEnable)   runIn(2, "updateTile")
+                if(settings?.xxTileEnable) runIn(3, "updateXxTile")
             }
             else if(cmd?.command=="get_room_mapping") {
                 logDebug "command '$cmd.command' was accepted"
@@ -645,10 +652,12 @@ void processMsg(Map message) {
         else if(code!=null && value!=null) {            
             processEvent(code,value)
             scheduleRefresh()
-            // ADDED: debounced tile update on live dps events
-            if(settings?.tileEnable) runIn(2, "updateTile")
+            // ADDED: trigger tile updates on live dps events
+            if(settings?.tileEnable)   runIn(2, "updateTile")
+            if(settings?.xxTileEnable) runIn(3, "updateXxTile")
         }
         else {
+            // this should never happen. if it does, clear the queue and wait for the normal 30min refresh to try again.
             logError "message not handled: key:$key value:$value"
             qClear()
         }
@@ -705,7 +714,7 @@ def parse(String topic, byte[] message) {
     Integer random     = readInt32BE(message, 7)
     Integer timestamp  = readInt32BE(message, 11)
     Integer protocol   = readInt16BE(message, 15)
-    if(protocol!=102) return
+    if(protocol!=102) return // WE DONT HANDLE IMAGES YET
     Integer payloadLen = readInt16BE(message, 17)
     byte[] payload = message[19..(19+payloadLen-1)]    
     logTrace "payloadLen:$payloadLen, payload:${payload.length}, byte0:${ String.format("%02x", payload[0] & 0xFF) }"
@@ -796,11 +805,11 @@ byte[] encrypt(byte[] payload, String key) {
 Integer CRC32(bytes, length) {
     def crc = 0xFFFFFFFF
     for (int i = 0; i < length; i++) {
-        def b = bytes[i] & 0xFF
+        def b = bytes[i] & 0xFF // Make sure the byte is treated as unsigned
         crc = crc ^ b
         for (int j = 7; j >= 0; j--) {
             def mask = -(crc & 1)
-            crc = (crc >>> 1) ^ (0xEDB88320 & mask)
+            crc = (crc >>> 1) ^ (0xEDB88320 & mask) // Use unsigned right shift
         }
     }
     return (crc ^ 0xFFFFFFFFL)
@@ -853,6 +862,7 @@ String encodeTimestamp(int timestamp) {
     return result
 }
 
+// Helper method to check if a string is numeric
 String.metaClass.isNumber = {
     delegate ==~ /-?\d+(\.\d+)?/
 }
@@ -1084,7 +1094,7 @@ void asyncHttpCallback(resp, data) {
                 getHomeDataCallback()
                 getDeviceScenes()
                 break
-            case "getHomeRooms":
+            case "getHomeRooms": // not used
                 break
             case "getDeviceScenes":
                 respJson?.result?.each { logTrace it }
@@ -1265,7 +1275,7 @@ Integer qSize() {
 	29: "Mapping",
 	100: "Charged",
     500: "Authorization error",
-    501: "Authorization Requires PIN",
+    501: "Authorization Requires PIN", 
     502: "Waiting for Authorization PIN",
     503: "Authorized",
     504: "Error requesting PIN",
@@ -1289,7 +1299,6 @@ Integer qSize() {
     304: "Fast",
 ]
 
-// https://github.com/marcelrv/XiaomiRobotVacuumProtocol/blob/master/water_box_custom_mode.md
 @Field static final Map mopWaterModeCodes  = [
     0: "Default",
 	200: "Off",
@@ -1300,7 +1309,6 @@ Integer qSize() {
     207: "Custom",
 ]
 
-//https://github.com/humbertogontijo/python-roborock/blob/main/roborock/code_mappings.py
 @Field static final Map dockErrorCodes  = [
     0: "No error",
     34: "Duct Blockage",
@@ -1314,20 +1322,15 @@ Integer qSize() {
 ]
 
 // ============================================================
-// ===================== HTML TILE ===========================
+// ===================== HTML TILE (device page) =============
 // ============================================================
-// Enabled via "Enable HTML status tile" preference.
-// Triggered by runIn(2,"updateTile") in processMsg() —
-// the 2s debounce collapses rapid attribute bursts into one render.
-// Only attributes with actual values are rendered — unsupported
-// attributes on any given model are silently omitted.
-// Use the html attribute in a Hubitat Dashboard tile set to
-// Attribute template to display this tile.
+// Enable via "Enable HTML status tile" preference.
+// Use the 'html' attribute in an Attribute template tile on
+// the device page. Full-featured, no character limit concern.
 // ============================================================
 void updateTile() {
     if (!settings?.tileEnable) return
 
-    // Safe readers — null if attribute missing, empty, or never populated
     Closure a = { String n ->
         def v = device.currentValue(n)
         if (v == null) return null
@@ -1339,7 +1342,6 @@ void updateTile() {
         try { return v.toDouble() } catch(e) { return null }
     }
 
-    // Read all attributes — null = not supported on this model, silently skipped
     String  nameVal    = a("name")                          ?: device.displayName
     String  stateVal   = a("state")
     String  healthVal  = a("healthStatus")
@@ -1354,26 +1356,19 @@ void updateTile() {
     String  dustVal    = a("dustCollection")
     String  roomsVal   = a("roomsList")
 
-    // Pre-compute all conditional values — no ternaries inside GString blocks
     String stateDisp  = stateVal ? stateVal.capitalize() : "Unknown"
     boolean online    = (healthVal == "online")
     boolean hasError  = errorVal && errorVal != "no error"
     boolean isCleaning = stateVal in ["cleaning", "spot cleaning", "room clean", "zone clean", "go to", "mapping"]
     boolean isDocked   = stateVal in ["charged", "charging", "docking", "returning dock", "emptying dust bin", "washing the mop"]
 
-    // Online badge colors
     String dotBg    = online ? "#1a4731" : "#4a1515"
     String dotColor = online ? "#4ade80" : "#f87171"
     String dotLabel = online ? "Online"  : "Offline"
-
-    // State accent color — green when active, amber when returning, gray when idle
     String stateBg   = isCleaning ? "#0d3060" : isDocked ? "#0d2a1a" : "#162032"
     String stateColor = isCleaning ? "#60a5fa" : isDocked ? "#4ade80" : "#94a3b8"
-
-    // Battery line
     String battLine = battVal != null ? " &nbsp;&#183;&nbsp; ${battVal.toInteger()}%" : ""
 
-    // Dust collection indicator
     String dustHtml = ""
     if (dustVal != null) {
         String dustBg    = dustVal == "on" ? "#1a3a6e" : "#1a2535"
@@ -1381,7 +1376,6 @@ void updateTile() {
         dustHtml = "<span style='font-size:10px;background:${dustBg};color:${dustColor};padding:2px 8px;border-radius:8px;margin-left:6px;'>Dust: ${dustVal}</span>"
     }
 
-    // Error banner
     String errorHtml = ""
     if (hasError) {
         errorHtml = """<tr><td colspan='2' style='padding:0 12px 6px 12px;'>
@@ -1389,7 +1383,6 @@ void updateTile() {
 </td></tr>"""
     }
 
-    // Clean progress bar — only shown during active cleaning
     String progressHtml = ""
     if (isCleaning && cleanPct != null) {
         int cp = Math.max(0, Math.min(100, cleanPct.toInteger()))
@@ -1408,7 +1401,6 @@ void updateTile() {
 </td></tr>"""
     }
 
-    // Last clean stats — time + area
     String statsHtml = ""
     if (cleanTime != null || cleanArea != null) {
         String cleaningLabel = isCleaning ? "Current" : "Last"
@@ -1418,7 +1410,6 @@ void updateTile() {
         statsHtml = "<div style='font-size:11px;color:#64748b;margin-top:3px;'>${cleaningLabel}: ${parts.join(" &nbsp;&#183;&nbsp; ")}</div>"
     }
 
-    // Consumable bars — only rows with actual values
     Closure bar = { Double pct, String label ->
         int p = Math.max(0, Math.min(100, pct.toInteger()))
         String bc    = p >= 50 ? "#16a34a" : p >= 25 ? "#d97706" : "#dc2626"
@@ -1448,7 +1439,6 @@ void updateTile() {
 </td></tr>"""
     }
 
-    // Rooms — show first 5 only, append "+N more" if truncated
     String roomsHtml = ""
     if (roomsVal) {
         List allRooms = roomsVal.split("\\|").collect { it.trim() }
@@ -1485,11 +1475,51 @@ ${roomsHtml}
 <tr><td colspan='2' style='padding:6px 12px 8px 12px;text-align:right;font-size:10px;color:#1e3a5f;'>${ts}</td></tr>
 </table>"""
 
-    logInfo "HTML tile length: ${html.length()} chars"
+    logInfo "html tile chars: ${html.length()}"
     sendEvent(name: "html", value: html, isStateChange: true)
-    logDebug "HTML tile updated"
+    logDebug "html tile updated"
 }
 
+// ============================================================
+// ================ DASHBOARD TILE (xxTile) ==================
+// ============================================================
+// Enable via "Enable compact dashboard tile" preference.
+// Use the 'xxTile' attribute in an Attribute template tile on
+// your HE dashboard. Rendered as a single compressed line to
+// stay under the 1024 character dashboard attribute limit.
+// 'xxTile' sorts to the bottom of the attribute list so it is
+// easy to find on the dashboard attribute picker.
+// ============================================================
+void updateXxTile() {
+    if (!settings?.xxTileEnable) return
+    Closure a   = { String n -> def v=device.currentValue(n); if(v==null)return null; def s=v.toString().trim(); (s==""||s=="null")?null:s }
+    Closure aNum= { String n -> def v=a(n); if(v==null)return null; try{return v.toDouble()}catch(e){return null} }
+    String nm=a("name")?:device.displayName
+    String st=a("state"); String hs=a("healthStatus"); String err=a("error")
+    Double bat=aNum("battery"); Double ct=aNum("cleanTime (min)"); Double ca=aNum("cleanArea (sq ft)")
+    Double fp=aNum("remainingFilter (%)"); Double mp=aNum("remainingMainBrush (%)"); Double sp=aNum("remainingSideBrush (%)")
+    String du=a("dustCollection")
+    boolean on=hs=="online"
+    boolean act=st in ["cleaning","spot cleaning","room clean","zone clean","go to","mapping"]
+    boolean dok=st in ["charged","charging","docking","returning dock","emptying dust bin","washing the mop"]
+    boolean er=err&&err!="no error"
+    String sbc=act?"#0d3060":dok?"#0d2a1a":"#162032"
+    String slc=act?"#60a5fa":dok?"#4ade80":"#94a3b8"
+    String sd=st?st.capitalize():"Unknown"
+    String bl=bat!=null?" · ${bat.toInteger()}%":""
+    Closure bar={ Double p,String l -> int pv=Math.max(0,Math.min(100,p.toInteger())); String c=pv>=50?"#4ade80":pv>=25?"#fbbf24":"#f87171"; String t=pv>=50?"#0d2a1a":pv>=25?"#2a1a05":"#2a0a0a"; String b=pv>=50?"#16a34a":pv>=25?"#d97706":"#dc2626"; "<tr><td style='color:#64748b;font-size:11px'>${l}</td><td style='padding:0 5px'><div style='background:${t};border-radius:3px;height:5px'><div style='background:${b};height:5px;width:${pv}%'></div></div></td><td style='color:${c};font-size:11px;text-align:right'>${pv}%</td></tr>" }
+    String bars=""
+    if(fp!=null)bars+=bar(fp,"Filter")
+    if(mp!=null)bars+=bar(mp,"Main")
+    if(sp!=null)bars+=bar(sp,"Side")
+    List pts=[]; if(ct!=null)pts<<"${ct.toInteger()}m"; if(ca!=null)pts<<"${ca.toInteger()}sf"
+    String stats=pts?"<div style='font-size:11px;color:#64748b'>${act?'Now':'Last'}: ${pts.join('·')}</div>":""
+    String duH=du?"<span style='font-size:10px;background:${du=='on'?'#1a3a6e':'#1a2535'};color:${du=='on'?'#60a5fa':'#475569'};padding:1px 5px;border-radius:6px;margin-left:3px'>Dust:${du}</span>":""
+    String erH=er?"<div style='background:#4a1515;color:#fca5a5;border-radius:4px;padding:2px 6px;font-size:11px;margin-bottom:3px'>&#9888; ${err.capitalize()}</div>":""
+    String html="<div style='background:#0a1628;border-radius:10px;padding:8px;font-family:sans-serif'>${erH}<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'><b style='color:#e2e8f0;font-size:13px'>${nm}${duH}</b><span style='font-size:10px;background:${on?'#1a4731':'#4a1515'};color:${on?'#4ade80':'#f87171'};padding:1px 7px;border-radius:8px'>${on?'Online':'Offline'}</span></div><div style='background:${sbc};border-radius:6px;padding:5px 8px;border-left:3px solid ${slc};margin-bottom:${bars?'5':'0'}px'><b style='color:#f1f5f9;font-size:13px'>${sd}${bl}</b>${stats}</div>${bars?"<table style='width:100%;border-collapse:collapse'>${bars}</table>":""}</div>"
+    logDebug "xxTile chars: ${html.length()}"
+    sendEvent(name:"xxTile", value:html, isStateChange:true)
+}
 
 /* ============================================================
  *  LOG HELPERS
