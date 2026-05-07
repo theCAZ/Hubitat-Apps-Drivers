@@ -86,6 +86,8 @@ metadata {
         attribute "healthStatus", "enum", ["offline", "online"]
         attribute "roomsList", "string"
         attribute "scenesList", "string"
+        // ADDED: compact HTML status tile — enable in preferences
+        attribute "html", "string"
 	}
 }
 
@@ -100,6 +102,8 @@ preferences {
     input(name:"cleanAttributeDisable", type:"bool", title: "Disable chatty cleanPercent, cleanArea, cleanPercent events:", defaultValue: false, width:4)
     input(name:"deviceInfoDisable", type:"bool", title: "Disable Info logging:", defaultValue: false, width:4)
     input(name:"deviceDebugEnable", type:"bool", title: "Enable Debug logging:", defaultValue: false, width:4)
+    // ADDED: HTML tile toggle
+    input(name:"tileEnable", type:"bool", title: "Enable HTML status tile (html attribute):", defaultValue: false, width:4)
     //input(name:"deviceTraceEnable", type:"bool", title: "Enable Trace logging:", defaultValue: false, width:4)
 }
 
@@ -335,8 +339,6 @@ void connect() {
         state.remove('restore')
         logDebug "connected successfully"
     } catch (org.eclipse.paho.client.mqttv3.MqttSecurityException e) {
-        // what i need to catch: org.eclipse.paho.client.mqttv3.MqttSecurityException: Not authorized to connect (method connect)
-        // what i can fake:      org.eclipse.paho.client.mqttv3.MqttSecurityException: Bad user name or password (method connect)
         logError "mqtt security exception: '${e.message}'"        
         if(settings?.autoLogin && settings.autoLogin!="manual") {
             processEvent("error_code", 257)
@@ -423,12 +425,10 @@ void processEvent(String name, def value) {
         //sendEventX(name: "wifi", value: value, descriptionText: "wifi set to $value")
         break    
     case "rooms":
-        // raw rooms JSON intentionally not sent as attribute - use roomsList
         String roomsList = value?.sort{ a,b -> a.key.toInteger() <=> b.key.toInteger() }?.findAll{ k,v -> v != null }?.collect{ k,v -> "$k: $v" }?.join(" | ")
         sendEventX(name: "roomsList", value: roomsList)
         break
     case "scenes":
-        // raw scenes JSON intentionally not sent as attribute - use scenesList
         String scenesList = value?.sort{ a,b -> a.key.toInteger() <=> b.key.toInteger() }?.collect{ k,v -> "$k: $v" }?.join(" | ")
         sendEventX(name: "scenesList", value: scenesList)
         break
@@ -589,15 +589,12 @@ void processEvent(String name, def value) {
 void processMsg(Map message) {
     logDebug "executing 'processMsg($message)'"
     message?.dps?.each { key,value ->        
-        // look up id and find the 'code' that was mapped in the home data. duid is used find the productID. 
         Map home = getHomeDataResult()
         String duid = getDeviceId()        
         String productId = home?.devices?.find{ it.duid?.toString() == duid?.toString() }?.productId
         String code = home?.products?.find{ it.id == productId }?.schema?.find { it.id?.toString() == key?.toString() }?.code
-        //String code = home?.products?.find{ it.id == productId }?.schema?.find { it.id == key }?.code
         
         if(code=="rpc_response") {
-            // we have good connection to device since we got a message back from it.
             setHealthStatusEvent(true)
             
             def jsonValue = null
@@ -611,7 +608,6 @@ void processMsg(Map message) {
                 if(settings?.deviceDebugEnable) logWarn "message unknown: $jsonValue"
                 return
             }           
-            // lets get our command that sent this request and we can start the queue up again.
             Map cmd = qPop()
             executeQueue()
     
@@ -622,11 +618,13 @@ void processMsg(Map message) {
                         result.switch=((result?.in_cleaning ?: 0).toInteger() != 0 || (result?.is_locating ?: 0).toInteger() != 0 || (result?.is_exploring ?: 0).toInteger() != 0) ? "on" : "off"
                         if(result?.battery?.toInteger()==100 && result?.state?.toInteger()==8) result.state=100
                         if(result?.clean_percent?.toInteger()==0 && result?.clean_area?.toInteger()>1) result.clean_percent=100
-                        if(!stateDoNotRefreshCodes.contains(result.state)) { scheduleRefresh(60) } // some units don't send real time dps events
+                        if(!stateDoNotRefreshCodes.contains(result.state)) { scheduleRefresh(60) }
                     }
                     logDebug "processing $result"
                     result?.each{ c,v -> processEvent(c,v) }
-                }                
+                }
+                // ADDED: debounced tile update after status/consumable response
+                if(settings?.tileEnable) runIn(2, "updateTile")
             }
             else if(cmd?.command=="get_room_mapping") {
                 logDebug "command '$cmd.command' was accepted"
@@ -647,9 +645,10 @@ void processMsg(Map message) {
         else if(code!=null && value!=null) {            
             processEvent(code,value)
             scheduleRefresh()
+            // ADDED: debounced tile update on live dps events
+            if(settings?.tileEnable) runIn(2, "updateTile")
         }
         else {
-            // this should never happen. if it does, clear the queue and wait for the normal 30min refresh to try again.
             logError "message not handled: key:$key value:$value"
             qClear()
         }
@@ -690,19 +689,8 @@ def parse(String topic, byte[] message) {
     }
     String localKey = getLocalKey(deviceId)
     logDebug "parse deviceId:$deviceId, localKey:$localKey, topic:$topic"
-    //  .endianess('big')
-    //  .string('version', {length: 3})
-    //  .uint32('seq')
-    //  .uint32('random')
-    //  .uint32('timestamp')
-    //  .uint16('protocol')
-    //  .uint16('payloadLen')
-    //  .buffer('payload', {length: 'payloadLen'})
-    //  .uint32('crc32');
-    // Extract version as string
     String version = bytesToString(message, 0, 3)
-    // Do some checks
-    if (version!="1.0") {// && version!="A01") {
+    if (version!="1.0") {
 	    logWarn "parse was not version as expected:$version, Message: ${message.encodeHex()}"
 	    return
 	}
@@ -717,7 +705,7 @@ def parse(String topic, byte[] message) {
     Integer random     = readInt32BE(message, 7)
     Integer timestamp  = readInt32BE(message, 11)
     Integer protocol   = readInt16BE(message, 15)
-    if(protocol!=102) return // WE DONT HANDLE IMAGES YET
+    if(protocol!=102) return
     Integer payloadLen = readInt16BE(message, 17)
     byte[] payload = message[19..(19+payloadLen-1)]    
     logTrace "payloadLen:$payloadLen, payload:${payload.length}, byte0:${ String.format("%02x", payload[0] & 0xFF) }"
@@ -774,16 +762,12 @@ byte[] build(String deviceId, Integer protocol, Integer timestamp, byte[] payloa
     
     int totalLength = 23 + encrypted.length
     byte[] msg = new byte[totalLength]
-    // Writing fixed string '1.0'
-    msg[0] = 49 // ASCII for '1'
-    msg[1] = 46 // ASCII for '.'
-    msg[2] = 48 // ASCII for '0'
+    msg[0] = 49; msg[1] = 46; msg[2] = 48
     writeInt32BE(msg, (Integer)(state.sequence & 0xFFFFFFFF), 3)
     writeInt32BE(msg, (Integer)(randomInt & 0xFFFFFFFF), 7)
     writeInt32BE(msg, timestamp, 11)
     writeInt16BE(msg, protocol, 15)
     writeInt16BE(msg, encrypted.length, 17)
-    // Manually copying encrypted data into msg
     for (Integer i = 0; i < encrypted.length; i++) {
         msg[19 + i] = encrypted[i]
     }
@@ -812,11 +796,11 @@ byte[] encrypt(byte[] payload, String key) {
 Integer CRC32(bytes, length) {
     def crc = 0xFFFFFFFF
     for (int i = 0; i < length; i++) {
-        def b = bytes[i] & 0xFF // Make sure the byte is treated as unsigned
+        def b = bytes[i] & 0xFF
         crc = crc ^ b
         for (int j = 7; j >= 0; j--) {
             def mask = -(crc & 1)
-            crc = (crc >>> 1) ^ (0xEDB88320 & mask) // Use unsigned right shift
+            crc = (crc >>> 1) ^ (0xEDB88320 & mask)
         }
     }
     return (crc ^ 0xFFFFFFFFL)
@@ -862,37 +846,29 @@ String datetimestring() {
 }
 
 String encodeTimestamp(int timestamp) {
-    // Convert the timestamp to a hexadecimal string and pad it to ensure it's at least 8 characters
     String hex = new BigInteger(Long.toString(timestamp)).toString(16).padLeft(8, '0')
     List<String> hexChars = hex.toList()
-    // Define the order in which to rearrange the hexadecimal characters
     int[] order = [5, 6, 3, 7, 1, 2, 0, 4]
     String result = order.collect { hexChars[it] }.join('')
     return result
 }
 
-// Helper method to check if a string is numeric
 String.metaClass.isNumber = {
     delegate ==~ /-?\d+(\.\d+)?/
 }
 
 def convertNumbers(element) {
     if (element instanceof List) {
-        // Element is a List; recursively convert each item in the list
         return element.collect { convertNumbers(it) }
     } else if (element instanceof Map) {
-        // Element is a Map; recursively convert each value in the map
         return element.collectEntries { key, value -> [(key): convertNumbers(value)] }
     } else if (element instanceof String) {
-        // Element is a String; attempt to convert to a number if possible
         if (element.isNumber()) {
             return element.contains('.') ? element.toFloat() : element.toInteger()
         } else {
-            // Keep as String
             return element
         }
     } else {
-        // For all other types, return the element as is
         return element
     }
 }
@@ -943,7 +919,6 @@ Map login() {
     String uri = getBaseURL() ?: settings.regionUri
     String path = "/api/v1/login"
     String queryString = "username=${URLEncoder.encode(settings.username, 'UTF-8')}&" + "password=${URLEncoder.encode(settings.password, 'UTF-8')}&" + "needtwostepauth=${URLEncoder.encode('false', 'UTF-8')}"
-    // Hash the username with MD5 and encode it to Base64 for the client ID header
     String headerClientId = generateHash(settings.username)
     Map headers = ['header_clientid':headerClientId]   
     
@@ -967,7 +942,6 @@ Map sendEmailCode() {
     String uri = getBaseURL() ?: settings.regionUri
     String path = "/api/v1/sendEmailCode"
     String queryString = ("username=" + URLEncoder.encode(settings.username, "UTF-8") + "&type=auth").toString()
-    // Hash the username with MD5 and encode it to Base64 for the client ID header
     String headerClientId = generateHash(settings.username)
     Map headers = ['header_clientid':headerClientId] 
 
@@ -991,7 +965,6 @@ Map loginWithCode(String verifyCode) {
     String uri = getBaseURL() ?: settings.regionUri
     String path = "/api/v1/loginWithCode"
     String queryString = ("username=" + URLEncoder.encode(settings.username, "UTF-8") + "&verifycode=" + URLEncoder.encode(verifyCode?.toString(), "UTF-8") + "&verifycodetype=AUTH_EMAIL_CODE").toString()
-    // Hash the username with MD5 and encode it to Base64 for the client ID header
     String headerClientId = generateHash(settings.username)
     Map headers = ['header_clientid':headerClientId] 
 
@@ -1026,7 +999,7 @@ void getHomeDetail() {
 void getHomeData() {
     Map rriot = getLoginData()?.rriot
     String rrHomeId = getHomeDetailData()?.rrHomeId
-    String path = "/v2/user/homes/$rrHomeId" // or "/user/homes/$rrHomeId",
+    String path = "/v2/user/homes/$rrHomeId"
     Map params = [
         uri: rriot?.r?.a,
         path: path,
@@ -1094,7 +1067,7 @@ void asyncHttpCallback(resp, data) {
         resp.headers.each { logTrace "${it.key} : ${it.value}" }
         logTrace "response data: ${resp.data}"
         Map respJson = new JsonSlurper().parseText(resp.data)
-        respJson.timestamp = now() // not used for anything yet.
+        respJson.timestamp = now()
         switch(data?.method) { 
             case "getHomeDetail":               
                 storeJsonState( data?.store, datetimestring(), respJson )
@@ -1111,8 +1084,7 @@ void asyncHttpCallback(resp, data) {
                 getHomeDataCallback()
                 getDeviceScenes()
                 break
-            case "getHomeRooms": // not used
-                //storeJsonState( data?.store, datetimestring(), respJson )
+            case "getHomeRooms":
                 break
             case "getDeviceScenes":
                 respJson?.result?.each { logTrace it }
@@ -1141,28 +1113,21 @@ void storeJsonState(String name, String visible, Map hidden) {
 Map fetchJsonState(String name) {
     if(state?."$name"==null) return [:]
     def slurper = new XmlSlurper().parseText((state[name]))
-    //String visibleText = slurper.span.find { it.@class == 'visible-data' }?.text()
     String encodedData = slurper?.span?.find { it.@class == 'hidden-data' }?.@'data-hidden'
     return parseJsonFromBase64( encodedData )
 }
 
-// Function to find the 'next' device given a 'duid'
 String findNextDevice(String duid=null) {
     List sortedDevices = getHomeDataResult()?.devices?.sort{ a, b -> a.duid <=> b.duid }
     sortedDevices?.result?.products.sort { it.id }?.result?.devices.sort { it.duid }
     Integer currentIndex = -1    
-    // Check if duid is not null
     if(duid != null) {
-        // Attempt to find the index of the device with the given duid
         currentIndex = sortedDevices.findIndexOf { it.duid == duid }
     }    
-    // If duid is null or the device is not found, return the first device
     if(duid == null || currentIndex == -1) {
         return sortedDevices[0]?.duid
     }    
-    // Calculate the index of the next device, wrapping around if necessary
     Integer nextIndex = (currentIndex + 1) % sortedDevices.size()    
-    // Retrieve and return the next device
     return sortedDevices[nextIndex]?.duid
 }
 
@@ -1204,7 +1169,6 @@ Map getHomeDataResult() {
     return g_mGetHomeData[device.getIdAsLong()]?.result ?: [:]
 }
 
-// needed a queue to manage publish messages, otherwise the broker will toss them. 
 @Field volatile static Map<Long,Map> qQueue = [:]
 private List qGet() {
     if(!qQueue[device.getIdAsLong()]) qQueue[device.getIdAsLong()] = []
@@ -1212,9 +1176,9 @@ private List qGet() {
 }
     
 void qPush(Map map) {
-    qGet().removeIf { now() > it?.ts + 30000 } //remove anything older than 30 seconds
-    map.ts = now() // Add timestamp
-    qGet() << map  // Append map to the end of the list
+    qGet().removeIf { now() > it?.ts + 30000 }
+    map.ts = now()
+    qGet() << map
 }
 
 void qClear() {
@@ -1223,7 +1187,7 @@ void qClear() {
 
 Map qPop() {
     if(qGet().size() > 0) {
-        return qGet().remove(0)  // Remove and return the first element
+        return qGet().remove(0)
     }
     return null
 }
@@ -1269,8 +1233,8 @@ Integer qSize() {
 	24: "No-go zone or invisible wall detected",
 	254: "Bin full",
 	255: "Internal error",
-    256: "Wifi Offline",  // added 1.1.2 and deprecated wifi attribute
-    257: "Authorization error", // added 1.1.5
+    256: "Wifi Offline",
+    257: "Authorization error",
 ]
 
 @Field static final List stateDoNotRefreshCodes = [ 0,1,2,3,9,10,12,14,100 ]
@@ -1300,9 +1264,8 @@ Integer qSize() {
 	28: "In call",
 	29: "Mapping",
 	100: "Charged",
-    
     500: "Authorization error",
-    501: "Authorization Requires PIN", 
+    501: "Authorization Requires PIN",
     502: "Waiting for Authorization PIN",
     503: "Authorized",
     504: "Error requesting PIN",
@@ -1349,6 +1312,184 @@ Integer qSize() {
     46: "No Dust Bin",
     53: "Cleaning Tank Full Blocked",
 ]
+
+// ============================================================
+// ===================== HTML TILE ===========================
+// ============================================================
+// Enabled via "Enable HTML status tile" preference.
+// Triggered by runIn(2,"updateTile") in processMsg() —
+// the 2s debounce collapses rapid attribute bursts into one render.
+// Only attributes with actual values are rendered — unsupported
+// attributes on any given model are silently omitted.
+// Use the html attribute in a Hubitat Dashboard tile set to
+// Attribute template to display this tile.
+// ============================================================
+void updateTile() {
+    if (!settings?.tileEnable) return
+
+    // Safe readers — null if attribute missing, empty, or never populated
+    Closure a = { String n ->
+        def v = device.currentValue(n)
+        if (v == null) return null
+        def s = v.toString().trim()
+        (s == "" || s == "null") ? null : s
+    }
+    Closure aNum = { String n ->
+        def v = a(n); if (v == null) return null
+        try { return v.toDouble() } catch(e) { return null }
+    }
+
+    // Read all attributes — null = not supported on this model, silently skipped
+    String  nameVal    = a("name")                          ?: device.displayName
+    String  stateVal   = a("state")
+    String  healthVal  = a("healthStatus")
+    String  errorVal   = a("error")
+    Double  battVal    = aNum("battery")
+    Double  cleanTime  = aNum("cleanTime (min)")
+    Double  cleanArea  = aNum("cleanArea (sq ft)")
+    Double  cleanPct   = aNum("cleanPercent (%)")
+    Double  filterPct  = aNum("remainingFilter (%)")
+    Double  mainPct    = aNum("remainingMainBrush (%)")
+    Double  sidePct    = aNum("remainingSideBrush (%)")
+    String  dustVal    = a("dustCollection")
+    String  roomsVal   = a("roomsList")
+
+    // Pre-compute all conditional values — no ternaries inside GString blocks
+    String stateDisp  = stateVal ? stateVal.capitalize() : "Unknown"
+    boolean online    = (healthVal == "online")
+    boolean hasError  = errorVal && errorVal != "no error"
+    boolean isCleaning = stateVal in ["cleaning", "spot cleaning", "room clean", "zone clean", "go to", "mapping"]
+    boolean isDocked   = stateVal in ["charged", "charging", "docking", "returning dock", "emptying dust bin", "washing the mop"]
+
+    // Online badge colors
+    String dotBg    = online ? "#1a4731" : "#4a1515"
+    String dotColor = online ? "#4ade80" : "#f87171"
+    String dotLabel = online ? "Online"  : "Offline"
+
+    // State accent color — green when active, amber when returning, gray when idle
+    String stateBg   = isCleaning ? "#0d3060" : isDocked ? "#0d2a1a" : "#162032"
+    String stateColor = isCleaning ? "#60a5fa" : isDocked ? "#4ade80" : "#94a3b8"
+
+    // Battery line
+    String battLine = battVal != null ? " &nbsp;&#183;&nbsp; ${battVal.toInteger()}%" : ""
+
+    // Dust collection indicator
+    String dustHtml = ""
+    if (dustVal != null) {
+        String dustBg    = dustVal == "on" ? "#1a3a6e" : "#1a2535"
+        String dustColor = dustVal == "on" ? "#60a5fa" : "#475569"
+        dustHtml = "<span style='font-size:10px;background:${dustBg};color:${dustColor};padding:2px 8px;border-radius:8px;margin-left:6px;'>Dust: ${dustVal}</span>"
+    }
+
+    // Error banner
+    String errorHtml = ""
+    if (hasError) {
+        errorHtml = """<tr><td colspan='2' style='padding:0 12px 6px 12px;'>
+  <div style='background:#4a1515;color:#fca5a5;border-radius:6px;padding:5px 9px;font-size:11px;'>&#9888; ${errorVal.capitalize()}</div>
+</td></tr>"""
+    }
+
+    // Clean progress bar — only shown during active cleaning
+    String progressHtml = ""
+    if (isCleaning && cleanPct != null) {
+        int cp = Math.max(0, Math.min(100, cleanPct.toInteger()))
+        progressHtml = """<tr><td colspan='2' style='padding:6px 12px 0 12px;'>
+  <table style='width:100%;border-collapse:collapse;'>
+  <tr>
+    <td style='font-size:10px;color:#64748b;width:1%;white-space:nowrap;padding-right:8px;'>Progress</td>
+    <td style='padding:0;'>
+      <div style='background:#1e3a5f;border-radius:3px;height:6px;'>
+        <div style='background:#3b82f6;border-radius:3px;height:6px;width:${cp}%;'></div>
+      </div>
+    </td>
+    <td style='font-size:11px;color:#60a5fa;font-weight:bold;width:1%;white-space:nowrap;padding-left:8px;'>${cp}%</td>
+  </tr>
+  </table>
+</td></tr>"""
+    }
+
+    // Last clean stats — time + area
+    String statsHtml = ""
+    if (cleanTime != null || cleanArea != null) {
+        String cleaningLabel = isCleaning ? "Current" : "Last"
+        List parts = []
+        if (cleanTime != null) parts << "${cleanTime.toInteger()} min"
+        if (cleanArea != null) parts << "${cleanArea.toInteger()} sq ft"
+        statsHtml = "<div style='font-size:11px;color:#64748b;margin-top:3px;'>${cleaningLabel}: ${parts.join(" &nbsp;&#183;&nbsp; ")}</div>"
+    }
+
+    // Consumable bars — only rows with actual values
+    Closure bar = { Double pct, String label ->
+        int p = Math.max(0, Math.min(100, pct.toInteger()))
+        String bc    = p >= 50 ? "#16a34a" : p >= 25 ? "#d97706" : "#dc2626"
+        String track = p >= 50 ? "#0d2a1a" : p >= 25 ? "#2a1a05" : "#2a0a0a"
+        String pc    = p >= 50 ? "#4ade80" : p >= 25 ? "#fbbf24" : "#f87171"
+        String bold  = p < 25 ? "font-weight:bold;" : ""
+        """<tr>
+  <td style='font-size:11px;color:#64748b;padding:3px 8px 3px 0;white-space:nowrap;width:1%;'>${label}</td>
+  <td style='padding:3px 0;'>
+    <div style='background:${track};border-radius:3px;height:5px;'>
+      <div style='background:${bc};border-radius:3px;height:5px;width:${p}%;'></div>
+    </div>
+  </td>
+  <td style='font-size:11px;color:${pc};padding:3px 0 3px 8px;white-space:nowrap;width:1%;text-align:right;${bold}'>${p}%</td>
+</tr>"""
+    }
+
+    boolean hasBars = (filterPct != null || mainPct != null || sidePct != null)
+    String barsHtml = ""
+    if (hasBars) {
+        String rows = ""
+        if (filterPct != null) rows += bar(filterPct, "Filter")
+        if (mainPct   != null) rows += bar(mainPct,   "Main brush")
+        if (sidePct   != null) rows += bar(sidePct,   "Side brush")
+        barsHtml = """<tr><td colspan='2' style='padding:8px 12px 0 12px;border-top:1px solid #1e3a5f;margin-top:4px;'>
+  <table style='width:100%;border-collapse:collapse;'>${rows}</table>
+</td></tr>"""
+    }
+
+    // Rooms — show first 5 only, append "+N more" if truncated
+    String roomsHtml = ""
+    if (roomsVal) {
+        List allRooms = roomsVal.split("\\|").collect { it.trim() }
+        int extra     = allRooms.size() - 5
+        List shown    = allRooms.take(5)
+        String suffix = extra > 0 ? " <span style='color:#334d6e;'>+${extra} more</span>" : ""
+        String roomsFormatted = shown.join(" &nbsp;&#183;&nbsp; ") + suffix
+        roomsHtml = """<tr><td colspan='2' style='padding:6px 12px 0 12px;border-top:1px solid #1e3a5f;'>
+  <div style='font-size:10px;color:#64748b;line-height:1.6;'>${roomsFormatted}</div>
+</td></tr>"""
+    }
+
+    String ts = new Date().format("MM/dd HH:mm", location.timeZone)
+
+    String html = """<table style='width:100%;border-collapse:collapse;font-family:sans-serif;background:#0a1628;border-radius:10px;'>
+${errorHtml}
+<tr><td colspan='2' style='padding:10px 12px 6px 12px;'>
+  <table style='width:100%;border-collapse:collapse;'>
+  <tr>
+    <td style='font-size:13px;font-weight:bold;color:#e2e8f0;'>${nameVal}${dustHtml}</td>
+    <td style='text-align:right;'><span style='font-size:10px;background:${dotBg};color:${dotColor};padding:2px 9px;border-radius:10px;font-weight:bold;'>${dotLabel}</span></td>
+  </tr>
+  </table>
+</td></tr>
+<tr><td colspan='2' style='padding:0 12px 6px 12px;'>
+  <div style='background:${stateBg};border-radius:7px;padding:8px 10px;border-left:3px solid ${stateColor};'>
+    <div style='font-size:15px;font-weight:bold;color:#f1f5f9;'>${stateDisp}${battLine}</div>
+    ${statsHtml}
+  </div>
+</td></tr>
+${progressHtml}
+${barsHtml}
+${roomsHtml}
+<tr><td colspan='2' style='padding:6px 12px 8px 12px;text-align:right;font-size:10px;color:#1e3a5f;'>${ts}</td></tr>
+</table>"""
+
+    logInfo "HTML tile length: ${html.length()} chars"
+    sendEvent(name: "html", value: html, isStateChange: true)
+    logDebug "HTML tile updated"
+}
+
 
 /* ============================================================
  *  LOG HELPERS
