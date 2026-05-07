@@ -13,7 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  *  ===========================================================================================================
- *  FIXES IN THIS VERSION (3.3.24)
+ *  FIXES IN THIS VERSION (3.3.25)
  *  ===========================================================================================================
  *
  *  BUG: Rate limit cascade loop
@@ -21,7 +21,7 @@
  *              disconnect → watchdog reconnects immediately → repeat.
  *  FIX: refreshAllDeviceStatus() now only fires if disconnected >30 min (configurable).
  *       trackApiCall() stops logging errors once rateLimitWarningSent flag is set.
- *       Watchdog won't reconnect if a connect() runIn is already pending.
+ *       disableBackgroundPolling now defaults to TRUE (recommended).
  *
  *  BUG: updateLastEventReceived() floods attribute log with 2600+ events/day
  *  ROOT CAUSE: Called on every parse() including keep-alives every 55s.
@@ -31,25 +31,27 @@
  *  ROOT CAUSE: logDebug("Response headers: ${headerNames}") inside header loop.
  *  FIX: Moved to traceLogging only — won't appear even with debugLogging enabled.
  *
- *  BUG: Watchdog (5 min) fires before NORMAL_RECONNECT_DELAY (5 min) runIn completes
- *  ROOT CAUSE: Both are 300s — watchdog wins the race and force-reconnects.
- *  FIX: Watchdog checks state.pendingReconnectTime before force-reconnecting.
- *       If a scheduled reconnect is pending and not overdue, watchdog backs off.
+ *  BUG: Aggressive watchdog caused more reconnects than it prevented
+ *  ROOT CAUSE: Full watchdog with auto-reconnect logic fired every 5 min, racing with
+ *              the normal reconnect delay and hammering the API on every recovery.
+ *  FIX: Replaced full watchdog with a lightweight stream health monitor.
+ *       New monitor ONLY logs a warning when no data received for the alert threshold.
+ *       It NEVER forces a reconnect — Hubitat's eventStreamStatus() handles that.
+ *       Result: silent drop is detected and logged, no cascade, no API calls.
  *
  *  NEW: Debug auto-disable preference (30 min / 60 min / Manual)
- *  NEW: "Reduce reconnect polling" preference — skips refreshAllDeviceStatus() on reconnect
- *  NEW: "Watchdog timeout" preference — configurable 3/5/10 min (default 10)
- *  NEW: "Disable background polling" preference — stops all reconnect-triggered refreshes
+ *  NEW: disableBackgroundPolling defaults to TRUE (was false — caused cascade)
+ *  NEW: Stream health monitor replaces watchdog (alert-only, no auto-reconnect)
+ *  NEW: streamHealthAlertMinutes preference — how long silent before warning (default 10 min)
  *
  *  Version History:
  *  ----------------
- *  3.3.24 2026-05-07  Fixed rate limit cascade loop (see above)
+ *  3.3.25 2026-05-07  Replaced aggressive watchdog with lightweight alert-only health monitor
+ *                     Fixed disableBackgroundPolling defaultValue to true
+ *                     Fixed rate limit cascade loop
  *                     Fixed attribute event flood from updateLastEventReceived()
  *                     Fixed header log spam in extractRateLimitHeaders()
- *                     Fixed watchdog/reconnect race condition
  *                     Added debug auto-disable (30/60 min)
- *                     Added configurable watchdog timeout
- *                     Added disable background polling preference
  *  [Previous versions omitted for brevity - see original driver for full history]
  */
 
@@ -114,7 +116,7 @@ metadata {
               title: "<b>Disable background polling on reconnect</b>",
               description: "Prevents refreshAllDeviceStatus() from firing after reconnect. " +
                            "Eliminates the rate limit cascade loop. Recommended: ON.",
-              defaultValue: false
+              defaultValue: true
 
         input name: "reconnectPollMinutes", type: "number",
               title: "<b>Min disconnection time before polling on reconnect (minutes)</b>",
@@ -123,11 +125,12 @@ metadata {
               defaultValue: 30,
               range: "1..1440"
 
-        input name: "watchdogTimeoutMinutes", type: "enum",
-              title: "<b>Stream watchdog timeout</b>",
-              description: "How long without data before the watchdog forces a reconnect. " +
-                           "Longer = less aggressive. Default: 10 minutes.",
-              options: ["3":"3 minutes", "5":"5 minutes", "10":"10 minutes", "15":"15 minutes"],
+        input name: "streamHealthAlertMinutes", type: "enum",
+              title: "<b>Stream silence alert threshold</b>",
+              description: "Log a WARNING if no data received from Home Connect for this long. " +
+                           "Alert only — never forces a reconnect. Hubitat handles reconnection " +
+                           "automatically via eventStreamStatus(). Set to 'Off' to disable.",
+              options: ["0":"Off", "5":"5 minutes", "10":"10 minutes", "15":"15 minutes", "30":"30 minutes"],
               defaultValue: "10"
     }
 }
@@ -138,18 +141,11 @@ metadata {
 
 @Field static final String  DEFAULT_API_URL         = "https://api.home-connect.com"
 @Field static final String  ENDPOINT_APPLIANCES     = "/api/homeappliances"
-@Field static final String  DRIVER_VERSION          = "3.3.24"
+@Field static final String  DRIVER_VERSION          = "3.3.25"
 
 @Field static final Integer NORMAL_RECONNECT_DELAY  = 300     // 5 min after normal disconnect
 @Field static final Integer MAX_RECONNECT_ATTEMPTS  = 10
 @Field static final Integer RATE_LIMIT_BUFFER       = 300     // 5 min buffer after rate limit expires
-@Field static final Integer STREAM_WATCHDOG_INTERVAL= 300     // Watchdog cron every 5 min
-// STREAM_TIMEOUT is now driven by watchdogTimeoutMinutes preference — see getStreamTimeout()
-
-private Integer getStreamTimeout() {
-    def minutes = settings?.watchdogTimeoutMinutes?.toInteger() ?: 10
-    return minutes * 60 * 1000  // Convert to milliseconds
-}
 
 private String getApiUrl() {
     return state.apiUrl ?: DEFAULT_API_URL
@@ -194,11 +190,16 @@ def initialize() {
     logInfo("Initializing Home Connect Stream Driver v${DRIVER_VERSION}")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
 
+    // Replace aggressive watchdog cron with lightweight health monitor
+    // Health monitor only logs warnings — never forces reconnect
     unschedule("streamWatchdog")
-    schedule("0 */5 * * * ?", "streamWatchdog")
+    unschedule("streamHealthMonitor")
+    if ((settings?.streamHealthAlertMinutes ?: "10") != "0") {
+        schedule("0 */5 * * * ?", "streamHealthMonitor")
+        logDebug("Stream health monitor scheduled (alert threshold: ${settings?.streamHealthAlertMinutes ?: 10}min)")
+    }
 
     state.processingDisconnect = false
-    // Clear pending reconnect tracking on init
     state.pendingReconnectTime = null
 
     connect()
@@ -394,7 +395,10 @@ def eventStreamStatus(String status) {
         state.pendingReconnectTime  = null
 
         unschedule("streamWatchdog")
-        schedule("0 */5 * * * ?", "streamWatchdog")
+        unschedule("streamHealthMonitor")
+        if ((settings?.streamHealthAlertMinutes ?: "10") != "0") {
+            schedule("0 */5 * * * ?", "streamHealthMonitor")
+        }
 
         // Only refresh device status if:
         //   - background polling is NOT disabled, AND
@@ -1326,4 +1330,3 @@ private void logDebug(String msg) { if (debugLogging)  log.debug "Home Connect S
 private void logInfo(String msg)  {                    log.info  "Home Connect Stream: ${msg}" }
 private void logWarn(String msg)  {                    log.warn  "Home Connect Stream: ${msg}" }
 private void logError(String msg) {                    log.error "Home Connect Stream: ${msg}" }
-
