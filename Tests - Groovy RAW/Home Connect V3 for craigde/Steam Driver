@@ -91,47 +91,35 @@ metadata {
     }
 
     preferences {
+        // ── Logging ──────────────────────────────────────────────────────────
         input name: "debugLogging", type: "bool",
               title: "<b>Enable debug logging</b>",
-              description: "Detailed logging for troubleshooting. Auto-disables per timer below.",
+              description: "Auto-disables after the time selected below.",
               defaultValue: false
 
         input name: "debugAutoDisable", type: "enum",
               title: "<b>Auto-disable debug logging after:</b>",
-              description: "Automatically turns off debug logging to prevent log spam.",
               options: ["30":"30 minutes", "60":"60 minutes", "manual":"Manual only"],
               defaultValue: "30"
 
         input name: "traceLogging", type: "bool",
               title: "<b>Enable trace logging</b>",
-              description: "Very verbose — only for deep troubleshooting. Also auto-disables per timer.",
+              description: "Very verbose — use only when directed by support. Also auto-disables per timer above.",
               defaultValue: false
 
-        input name: "verboseStreamDiag", type: "bool",
-              title: "<b>Enable verbose stream diagnostics</b>",
-              description: "Per-appliance event timing and keep-alive gap logging.",
-              defaultValue: false
-
-        input name: "disableBackgroundPolling", type: "bool",
-              title: "<b>Disable background polling on reconnect</b>",
-              description: "Prevents refreshAllDeviceStatus() from firing after reconnect. " +
-                           "Eliminates the rate limit cascade loop. Recommended: ON.",
-              defaultValue: true
-
-        input name: "reconnectPollMinutes", type: "number",
-              title: "<b>Min disconnection time before polling on reconnect (minutes)</b>",
-              description: "Only refresh device status if disconnected longer than this. " +
-                           "Ignored if 'Disable background polling' is ON. Default: 30.",
-              defaultValue: 30,
-              range: "1..1440"
-
+        // ── Stream health ─────────────────────────────────────────────────────
         input name: "streamHealthAlertMinutes", type: "enum",
-              title: "<b>Stream silence alert threshold</b>",
-              description: "Log a WARNING if no data received from Home Connect for this long. " +
-                           "Alert only — never forces a reconnect. Hubitat handles reconnection " +
-                           "automatically via eventStreamStatus(). Set to 'Off' to disable.",
+              title: "<b>Alert if no data received for:</b>",
+              description: "Logs a warning if Home Connect goes quiet. Does NOT force a reconnect — Hubitat handles that automatically.",
               options: ["0":"Off", "5":"5 minutes", "10":"10 minutes", "15":"15 minutes", "30":"30 minutes"],
               defaultValue: "10"
+
+        // ── API / Rate limit protection ───────────────────────────────────────
+        input name: "disableBackgroundPolling", type: "bool",
+              title: "<b>Disable device refresh on reconnect</b>",
+              description: "Prevents all appliances being polled every time the stream reconnects. " +
+                           "Keeps API usage low. Recommended: ON.",
+              defaultValue: true
     }
 }
 
@@ -400,23 +388,14 @@ def eventStreamStatus(String status) {
             schedule("0 */5 * * * ?", "streamHealthMonitor")
         }
 
-        // Only refresh device status if:
-        //   - background polling is NOT disabled, AND
-        //   - disconnected longer than reconnectPollMinutes threshold
+        // Only refresh device status if background polling is NOT disabled
         def previousDisconnectTime = state.lastDisconnectTime ?: 0
         if (previousDisconnectTime > 0 && !settings?.disableBackgroundPolling) {
-            def disconnectedMs = now() - previousDisconnectTime
-            def thresholdMs    = ((settings?.reconnectPollMinutes ?: 30).toInteger()) * 60 * 1000
-            if (disconnectedMs >= thresholdMs) {
-                def disconnectedMin = (disconnectedMs / 60000).toInteger()
-                logInfo("Reconnected after ${disconnectedMin}min — scheduling device status refresh (threshold: ${settings?.reconnectPollMinutes ?: 30}min)")
-                runIn(5, "notifyParentReconnected")
-            } else {
-                def disconnectedSec = (disconnectedMs / 1000).toInteger()
-                logInfo("Reconnected after ${disconnectedSec}s — skipping refresh (below ${settings?.reconnectPollMinutes ?: 30}min threshold)")
-            }
+            def disconnectedSec = ((now() - previousDisconnectTime) / 1000).toInteger()
+            logInfo("Reconnected after ${disconnectedSec}s — scheduling device status refresh")
+            runIn(5, "notifyParentReconnected")
         } else if (settings?.disableBackgroundPolling) {
-            logDebug("Reconnected — background polling disabled, skipping device refresh")
+            logDebug("Reconnected — device refresh on reconnect is disabled")
         }
 
     } else if (status.contains("STOP") || status.contains("ERROR")) {
@@ -464,7 +443,7 @@ def eventStreamStatus(String status) {
             logWarn("Connection failed — scheduling reconnect in ${delay}s (attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS})")
         }
 
-        // Record when the reconnect is due so the watchdog can back off
+        // Record when the reconnect is due for diagnostic purposes
         state.pendingReconnectTime = now() + (delay * 1000)
         runIn(delay, "connect")
     }
@@ -488,83 +467,48 @@ def notifyParentReconnected() {
    STREAM HEALTH WATCHDOG
    =========================================================================================================== */
 
-def streamWatchdog() {
+/* ===========================================================================================================
+   STREAM HEALTH MONITOR
+   
+   Replaces the aggressive watchdog. Does ONE thing: logs a WARNING if no SSE data
+   has arrived for longer than streamHealthAlertMinutes. Never forces a reconnect —
+   Hubitat's eventStreamStatus() already handles that cleanly.
+   =========================================================================================================== */
+
+def streamHealthMonitor() {
+    def alertMinutes = (settings?.streamHealthAlertMinutes ?: "10").toInteger()
+    if (alertMinutes == 0) return   // Monitoring disabled
+
     def currentStatus = device.currentValue("connectionStatus")
 
+    // Only alert when we think we're connected — don't spam during known disconnects
     if (currentStatus != "connected") {
-        // Rate limited — back off
-        if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
-            def remainingMin  = ((state.rateLimitedUntil - now()) / 60000).toInteger()
-            def expiryTime    = state.rateLimitedUntilFormatted ?: formatDateTime(state.rateLimitedUntil)
-            logDebug("Stream watchdog: rate limited — expires ${expiryTime} (${remainingMin}min remaining)")
-            if (device.currentValue("connectionStatus") == "disconnected") {
-                sendEvent(name: "connectionStatus", value: "rate limited until ${expiryTime}")
-            }
-            return
-        }
-
-        // Still in the process of connecting — back off
-        if (currentStatus == "connecting") {
-            logDebug("Stream watchdog: still connecting — will check again at next interval")
-            return
-        }
-
-        // FIX: Back off if a scheduled reconnect is already pending and not overdue
-        // This prevents the watchdog from force-reconnecting before NORMAL_RECONNECT_DELAY fires
-        if (state.pendingReconnectTime) {
-            def overdue = now() - state.pendingReconnectTime
-            if (overdue < 0) {
-                // Reconnect hasn't fired yet — watchdog backs off
-                def waitSec = (-overdue / 1000).toInteger()
-                logDebug("Stream watchdog: reconnect already scheduled in ${waitSec}s — backing off")
-                return
-            } else if (overdue < 30000) {
-                // Reconnect just fired (within 30s) — give it time to complete
-                logDebug("Stream watchdog: reconnect just fired ${(overdue/1000).toInteger()}s ago — backing off")
-                return
-            }
-            // Reconnect is overdue (>30s past due) — clear flag and force reconnect
-            logWarn("Stream watchdog: scheduled reconnect appears stuck (${(overdue/1000).toInteger()}s overdue) — forcing reconnect")
-            state.pendingReconnectTime = null
-        }
-
-        // Auto-recovery for all other non-connected states
-        logWarn("Stream watchdog: not connected (${currentStatus}) — attempting auto-recovery")
-        state.processingDisconnect = false
-        state.reconnectAttempts    = 0
-        connect()
+        logDebug("Stream health monitor: status is '${currentStatus}' — skipping check")
+        return
+    }
+    if (state.rateLimitedUntil && now() < state.rateLimitedUntil) {
+        logDebug("Stream health monitor: rate limited — skipping check")
         return
     }
 
-    // Connected — check for silent dead stream
-    def lastParse  = state.lastParseTime ?: 0
-    def elapsed
-    if (lastParse > 0) {
-        elapsed = now() - lastParse
-    } else {
-        def fallback = state.lastRealEventTime ?: state.connectionStartTime ?: 0
-        if (fallback > 0) {
-            elapsed = now() - fallback
-            logWarn("Stream watchdog: lastParseTime missing — using fallback (${(elapsed/1000).toInteger()}s ago)")
-            state.lastParseTime = fallback
-        } else {
-            logWarn("Stream watchdog: all timestamps missing — forcing reconnect")
-            elapsed = getStreamTimeout() + 1
-        }
+    def lastParse = state.lastParseTime ?: state.connectionStartTime ?: 0
+    if (lastParse == 0) {
+        logDebug("Stream health monitor: no timestamp available — skipping")
+        return
     }
 
-    if (elapsed > getStreamTimeout()) {
-        def elapsedSec = (elapsed / 1000).toInteger()
-        logWarn("Stream watchdog: no data for ${elapsedSec}s — stream appears dead, forcing reconnect")
-        sendEvent(name: "connectionStatus", value: "disconnected - watchdog timeout")
-        try { interfaces.eventStream.close() } catch (Exception e) { logDebug("Error closing dead stream: ${e.message}") }
-        state.connectionSucceeded  = false
-        state.processingDisconnect = false
-        messageBuffer = ""
-        runIn(5, "connect")
+    def silentMs  = now() - lastParse
+    def silentMin = (silentMs / 60000).toInteger()
+    def silentSec = (silentMs / 1000).toInteger()
+
+    if (silentMs > (alertMinutes * 60 * 1000)) {
+        logWarn("Stream health: no data received for ${silentMin}min ${silentSec % 60}s " +
+                "(threshold: ${alertMinutes}min). Stream may have dropped silently. " +
+                "Hubitat will reconnect automatically if connection is lost. " +
+                "If events have stopped flowing, click Reconnect on the device page.")
+        sendEvent(name: "connectionStatus", value: "connected - no data for ${silentMin}min")
     } else {
-        logDebug("Stream watchdog: stream healthy (last data ${(elapsed/1000).toInteger()}s ago)")
-        if (settings?.verboseStreamDiag) logStreamHealthDiagnostics(elapsed)
+        logDebug("Stream health monitor: OK — last data ${silentSec}s ago")
     }
 }
 
@@ -577,8 +521,8 @@ private void logStreamHealthDiagnostics(long parseElapsedMs) {
     logInfo("=== STREAM HEALTH DIAGNOSTICS ===")
     logInfo("Connection age:     ${(connectionAge/1000).toInteger()}s")
     logInfo("Last ANY data:      ${(parseElapsedMs/1000).toInteger()}s ago")
-    logInfo("Watchdog timeout:   ${settings?.watchdogTimeoutMinutes ?: 10}min")
-    logInfo("Background polling: ${settings?.disableBackgroundPolling ? 'DISABLED' : 'enabled (threshold: ' + (settings?.reconnectPollMinutes ?: 30) + 'min)'}")
+    logInfo("Alert threshold:    ${settings?.streamHealthAlertMinutes ?: 10}min")
+    logInfo("Device refresh:     ${settings?.disableBackgroundPolling ? 'DISABLED on reconnect' : 'enabled on reconnect'}")
     if (realEventElapsed >= 0) {
         logInfo("Last REAL event:    ${(realEventElapsed/1000).toInteger()}s ago (${state.lastRealEventType ?: 'unknown'})")
     } else {
@@ -586,13 +530,12 @@ private void logStreamHealthDiagnostics(long parseElapsedMs) {
     }
     logInfo("KEEP-ALIVE count:   ${keepAliveCount}")
     logInfo("Buffer size:        ${messageBuffer?.length() ?: 0} chars")
-
     if (state.applianceLastEventTime) {
         logInfo("--- Per-Appliance Last Event ---")
         state.applianceLastEventTime.each { haId, timestamp ->
-            def ago     = ((now() - timestamp) / 1000).toInteger()
-            def lastType= state.applianceLastEventType?.get(haId) ?: "unknown"
-            def lastKey = state.applianceLastEventKey?.get(haId)  ?: "unknown"
+            def ago      = ((now() - timestamp) / 1000).toInteger()
+            def lastType = state.applianceLastEventType?.get(haId) ?: "unknown"
+            def lastKey  = state.applianceLastEventKey?.get(haId)  ?: "unknown"
             logInfo("  ${haId}: ${ago}s ago [${lastType}] ${lastKey}")
         }
     }
@@ -654,7 +597,6 @@ def parse(String text) {
         sendEvent(name: "connectionStatus", value: "connected")
         state.connectionSucceeded  = true
         state.processingDisconnect = false
-        state.pendingReconnectTime = null
         unschedule("connect")
     }
 
