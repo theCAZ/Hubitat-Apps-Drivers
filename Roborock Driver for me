@@ -630,7 +630,8 @@ void processMsg(Map message) {
                     result?.each{ c,v -> processEvent(c,v) }
                 }
                 // ADDED: trigger tile updates after status/consumable response
-                queueTileUpdate()
+                if(settings?.tileEnable)   runIn(2, "updateTile")
+                if(settings?.xxTileEnable) runIn(3, "updateXxTile")
             }
             else if(cmd?.command=="get_room_mapping") {
                 logDebug "command '$cmd.command' was accepted"
@@ -652,7 +653,8 @@ void processMsg(Map message) {
             processEvent(code,value)
             scheduleRefresh()
             // ADDED: trigger tile updates on live dps events
-            queueTileUpdate()
+            if(settings?.tileEnable)   runIn(2, "updateTile")
+            if(settings?.xxTileEnable) runIn(3, "updateXxTile")
         }
         else {
             // this should never happen. if it does, clear the queue and wait for the normal 30min refresh to try again.
@@ -1473,7 +1475,7 @@ ${roomsHtml}
 <tr><td colspan='2' style='padding:6px 12px 8px 12px;text-align:right;font-size:10px;color:#1e3a5f;'>${ts}</td></tr>
 </table>"""
 
-    logDebug "html tile chars: ${html.length()}"
+    logInfo "html tile chars: ${html.length()}"
     sendEvent(name: "html", value: html, isStateChange: true)
     logDebug "html tile updated"
 }
@@ -1527,24 +1529,6 @@ void updateXxTile() {
     String html="${erH}<div style='background:#0a1628;border-radius:10px;padding:16px;font-family:sans-serif'><div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px'><b style='color:#e2e8f0;font-size:14px'>${nm}${duH}</b><span style='font-size:11px;background:${on?'#1a4731':'#4a1515'};color:${on?'#4ade80':'#f87171'};padding:2px 9px;border-radius:8px'>${on?'Online':'Offline'}</span></div><div style='background:${sbc};border-radius:8px;padding:12px 14px;border-left:3px solid ${slc};'><b style='color:#f1f5f9;font-size:16px'>${sd}${bl}</b>${stats}</div>${bottom}</div>"
     logDebug "xxTile chars: ${html.length()}"
     sendEvent(name:"xxTile", value:html, isStateChange:true)
-}
-private queueTileUpdate() {
-    if(state.tileUpdatePending != true) {
-        state.tileUpdatePending = true
-        runIn(10, "performTileUpdate")
-    }
-}
-
-def performTileUpdate() {
-    state.tileUpdatePending = false
-
-    if(settings?.tileEnable) {
-        updateTile()
-    }
-
-    if(settings?.xxTileEnable) {
-        updateXxTile()
-    }
 }
 /* ============================================================
  *  LOG HELPERS
