@@ -92,19 +92,15 @@ metadata {
 
     preferences {
         // ── Logging ──────────────────────────────────────────────────────────
-        input name: "debugLogging", type: "bool",
-              title: "<b>Enable debug logging</b>",
-              description: "Auto-disables after the time selected below.",
-              defaultValue: false
-
-        input name: "debugAutoDisable", type: "enum",
-              title: "<b>Auto-disable debug logging after:</b>",
-              options: ["30":"30 minutes", "60":"60 minutes", "manual":"Manual only"],
-              defaultValue: "30"
+        input name: "debugLogging", type: "enum",
+              title: "<b>Debug logging</b>",
+              description: "Detailed logging for troubleshooting. Auto-disables after selected time.",
+              options: ["off":"Off", "30":"On — auto-disable after 30 min", "60":"On — auto-disable after 60 min", "manual":"On — manual disable only"],
+              defaultValue: "off"
 
         input name: "traceLogging", type: "bool",
-              title: "<b>Enable trace logging</b>",
-              description: "Very verbose — use only when directed by support. Also auto-disables per timer above.",
+              title: "<b>Trace logging</b>",
+              description: "Very verbose — use only when directed by support. Uses same auto-disable timer as debug logging.",
               defaultValue: false
 
         // ── Stream health ─────────────────────────────────────────────────────
@@ -117,8 +113,7 @@ metadata {
         // ── API / Rate limit protection ───────────────────────────────────────
         input name: "disableBackgroundPolling", type: "bool",
               title: "<b>Disable device refresh on reconnect</b>",
-              description: "Prevents all appliances being polled every time the stream reconnects. " +
-                           "Keeps API usage low. Recommended: ON.",
+              description: "Prevents all appliances being polled every time the stream reconnects. Keeps API usage low. Recommended: ON.",
               defaultValue: true
     }
 }
@@ -154,11 +149,12 @@ def updated() {
     def previousVersion = device.currentValue("driverVersion")
     sendEvent(name: "driverVersion", value: DRIVER_VERSION)
 
-    // Manage debug auto-disable schedule
+    // Manage debug auto-disable using combined enum setting
     unschedule("disableDebugLogging")
-    if (debugLogging && settings?.debugAutoDisable != "manual") {
-        def minutes = settings?.debugAutoDisable?.toInteger() ?: 30
-        log.info "Debug logging will auto-disable in ${minutes} minutes"
+    def debugSetting = settings?.debugLogging ?: "off"
+    if (debugSetting != "off" && debugSetting != "manual") {
+        def minutes = debugSetting.toInteger()
+        log.info "Home Connect Stream: debug logging will auto-disable in ${minutes} minutes"
         runIn(minutes * 60, "disableDebugLogging")
     }
 
@@ -170,8 +166,8 @@ def updated() {
 
 def disableDebugLogging() {
     log.info "Home Connect Stream: auto-disabling debug/trace logging"
-    device.updateSetting("debugLogging",  [value: false, type: "bool"])
-    device.updateSetting("traceLogging",  [value: false, type: "bool"])
+    device.updateSetting("debugLogging", [value: "off", type: "enum"])
+    device.updateSetting("traceLogging", [value: false, type: "bool"])
 }
 
 def initialize() {
@@ -1268,7 +1264,7 @@ def z_setApiUrl(String url) {
     logInfo("API URL set to: ${url}")
 }
 
-private void logDebug(String msg) { if (debugLogging)  log.debug "Home Connect Stream: ${msg}" }
+private void logDebug(String msg) { if (settings?.debugLogging && settings.debugLogging != "off") log.debug "Home Connect Stream: ${msg}" }
 private void logInfo(String msg)  {                    log.info  "Home Connect Stream: ${msg}" }
 private void logWarn(String msg)  {                    log.warn  "Home Connect Stream: ${msg}" }
 private void logError(String msg) {                    log.error "Home Connect Stream: ${msg}" }
