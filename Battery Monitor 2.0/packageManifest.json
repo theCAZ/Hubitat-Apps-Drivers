@@ -1,12 +1,12 @@
 {
   "packageName": "Battery Monitor 2.0",
   "author": "Jdthomas24",
-  "version": "2.4.21",
+  "version": "2.4.22",
   "category": "Convenience",
   "description": "Advanced Hubitat battery monitoring with analytics, trends and replacement tracking. Recurring scan schedule, confidence-weighted health, EWMA smoothing.",
   "dateReleased": "4/8/26",
   "minimumHEVersion": "2.3.0",
-  "releaseNotes": "v2.4.21 - Maintenance release: internal reliability improvements. No user-facing changes. Outlier rejection added to the drain model — single bad readings that are 4× the rolling average are now silently skipped before being added to the EWMA. Only active once 3+ baseline samples exist; existing samples are never touched. Reset Drain History and Manual Replacement now write state atomically (full object built first, assigned in one shot) to prevent partial state if an exception occurs mid-operation. firstSeenDate and lastLevel are preserved on drain resets — samples start fresh but accumulated timing data is kept. All existing device history, samples, health scores, replacement logs, and settings are fully preserved — no re-learning required.",
+  "releaseNotes": "v2.4.22 - Fixed false automatic replacement detection triggered by app updates or hub reboots. Auto-detection now requires at least 2 prior drain samples before it can fire. Affects HomeKit/virtual devices that always report a fixed battery level (e.g. Ecobee via HomeKit Integration). Existing history and samples fully preserved.",
   "apps": [
     {
       "name": "Battery Monitor 2.0",
