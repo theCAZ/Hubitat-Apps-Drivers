@@ -7,7 +7,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
     iconUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Tests%20-%20Groovy%20RAW/Battery%20Monitor%202.0%20BETA%20Tests",
     iconX2Url: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
-    version: "2.4.21",
+    version: "2.4.22",
     doNotFocus: true
 )
 
@@ -303,7 +303,7 @@ def mainPage() {
 
         section("<b>Diagnostics</b>") {
             input "debugMode", "bool", title: "Debug Logging (auto-disables after 30 min)", defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.4.21</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.4.22</span>"
         }
     }
 }
@@ -381,7 +381,6 @@ def shouldRunWeekly() {
 }
 
 def scheduledSummary() {
-    // ── Global notification snooze check ──────────────────
     if (state.notifSnoozedUntil && state.notifSnoozedUntil >= now()) {
         if (debugMode) log.debug "Notifications snoozed until ${new Date(state.notifSnoozedUntil)} — skipping summary"
         return
@@ -559,12 +558,10 @@ def updateBattery(device, level) {
             zeroCount:     0
         ]
         state.trend[device.id] = "Stable"
-        // force persist on seed
         state.history = state.history
         data = state.history[device.id]
     }
 
-    // v2.4.16: treat 1% same as 0% for dead battery detection
     if (level <= 1) {
         data.zeroCount = (data.zeroCount ?: 0) + 1
     } else {
@@ -607,11 +604,6 @@ def updateBattery(device, level) {
         def validSample  = (rawDrain > 0) || (rawDrain == 0 && hours >= 24)
 
         if (validSample) {
-            // FIX v2.4.21: outlier rejection — skip samples that are 4x the rolling average.
-            // Only applied once we have >= 3 samples to establish a reliable baseline.
-            // This prevents a single bad reading (signal dropout, driver glitch, firmware quirk)
-            // from skewing the EWMA for several cycles. Existing samples are never touched —
-            // only the new candidate sample is evaluated before being added.
             def isOutlier = false
             if (data.samples && data.samples.size() >= 3) {
                 def rollingAvg = data.samples.sum() / data.samples.size()
@@ -641,7 +633,6 @@ def updateBattery(device, level) {
     data.lastLevel    = level
     data.lastScanDate = now()
 
-    // force persist after every mutation
     state.history[device.id] = data
     state.history = state.history
 }
@@ -681,6 +672,14 @@ def detectReplacement(device, newLevel, oldLevel) {
     def largeJump       = (newLevel - oldLevel)
     def hadDrainHistory = data?.samples && data.samples.size() >= 2
     def detected        = false
+
+    // v2.4.22: guard against false positives on app update/reinit or virtual/HomeKit
+    // devices that always report a fixed level (e.g. Ecobee sensors via HomeKit Integration
+    // always report 100%). When no drain history exists, oldLevel is unreliable — the app
+    // has no real "before" state to compare against. Skip auto-detection entirely until
+    // at least 2 samples have been collected. Manual replacement always works regardless
+    // of this guard.
+    if (!hadDrainHistory) return
 
     if (newLevel >= 95 && oldLevel <= 40)                                            detected = true
     else if (newLevel >= 90 && oldLevel <= 40 && largeJump >= 25)                    detected = true
@@ -1355,12 +1354,6 @@ def resetDrainConfirmPage() {
                     def device = devList.find { it.id == deviceId }
                     if (device) {
                         def existing = state.history[device.id] ?: [:]
-
-                        // FIX v2.4.21: build complete data object first, assign in one shot.
-                        // Prevents partial state if an exception occurs mid-mutation.
-                        // IMPORTANT: firstSeenDate and lastLevel are intentionally preserved
-                        // from existing data — this is a drain reset, not a replacement.
-                        // Users' accumulated history is not affected.
                         def resetData = [
                             lastLevel:     existing.lastLevel     ?: (device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100),
                             lastDate:      now(),
@@ -1569,11 +1562,6 @@ def manualReplacementConfirmPage() {
                     def device = devList.find { it.id == deviceId }
                     if (device) {
                         def level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
-
-                        // FIX v2.4.21: build complete replacement data object first, assign in one shot.
-                        // Prevents partial state if an exception occurs mid-mutation.
-                        // firstSeenDate = now() is correct here — this IS a replacement,
-                        // so the pending gate resets from today for the fresh battery.
                         def replacementData = [
                             lastLevel:     level,
                             lastDate:      now(),
@@ -1789,16 +1777,6 @@ def batteryCatalogPage() {
 def infoPage(Map params = [:]) {
     dynamicPage(name: "infoPage", title: "App Guide & Reference", install: false) {
 
-        section("<b>📡 What's New in v2.4.21</b>") {
-            paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "<b>Battery Monitor v2.4.21</b> — internal reliability improvements. No user-facing changes.<br><br>" +
-                      "<b>What changed:</b><br>" +
-                      "• <b>Outlier rejection</b> — the drain model now ignores single bad readings that are 4× the rolling average (signal dropout, driver glitch, firmware quirk). Only applied once 3+ baseline samples exist. Existing samples are never touched — only the incoming candidate is evaluated.<br>" +
-                      "• <b>Reset Drain History</b> — history is now built as a complete object and written in one atomic operation, preventing partial state if an exception occurs mid-reset. <code>firstSeenDate</code> and <code>lastLevel</code> are preserved — this is a drain reset, not a replacement.<br>" +
-                      "• <b>Manual Replacement</b> — same atomic write pattern applied. All replacement fields are set together in one assignment.<br><br>" +
-                      "All existing device history, samples, health scores, replacement logs, and settings are fully preserved — no re-learning required.</div>"
-        }
-
         section("<b>🔑 Battery Level Ranges</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>Battery level colors reflect current charge percentage. " +
                       "Health ratings use the same color scheme but are based on drain rate — not battery percentage. " +
@@ -1888,6 +1866,8 @@ def infoPage(Map params = [:]) {
                       "<b>Force Scan does NOT instantly generate drain samples.</b> A sample requires the battery level to have " +
                       "changed since the last reading, or 24+ hours to have passed at the same level.<br><br>" +
                       "<b>Replacement detection</b> fires automatically when a device jumps from ≤40% up to ≥90–95%. " +
+                      "Detection requires at least 2 prior drain samples — this prevents false positives on app updates or " +
+                      "virtual/HomeKit devices that always report a fixed level. " +
                       "If replaced before dropping to 40%, log it manually to keep trends accurate.</div>"
         }
 
