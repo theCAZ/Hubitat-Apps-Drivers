@@ -1507,16 +1507,20 @@ void updateXxTile() {
     String slc=act?"#60a5fa":dok?"#4ade80":"#94a3b8"
     String sd=st?st.capitalize():"Unknown"
     String bl=bat!=null?" · ${bat.toInteger()}%":""
-    Closure bar={ Double p,String l -> int pv=Math.max(0,Math.min(100,p.toInteger())); String c=pv>=50?"#4ade80":pv>=25?"#fbbf24":"#f87171"; String t=pv>=50?"#0d2a1a":pv>=25?"#2a1a05":"#2a0a0a"; String b=pv>=50?"#16a34a":pv>=25?"#d97706":"#dc2626"; "<tr><td style='color:#64748b;font-size:11px'>${l}</td><td style='padding:0 5px'><div style='background:${t};border-radius:3px;height:5px'><div style='background:${b};height:5px;width:${pv}%'></div></div></td><td style='color:${c};font-size:11px;text-align:right'>${pv}%</td></tr>" }
-    String bars=""
-    if(fp!=null)bars+=bar(fp,"Filter")
-    if(mp!=null)bars+=bar(mp,"Main")
-    if(sp!=null)bars+=bar(sp,"Side")
+    Closure pc={ Double p -> p>=50?"#4ade80":p>=25?"#fbbf24":"#f87171" }
     List pts=[]; if(ct!=null)pts<<"${ct.toInteger()}m"; if(ca!=null)pts<<"${ca.toInteger()}sf"
-    String stats=pts?"<div style='font-size:11px;color:#64748b'>${act?'Now':'Last'}: ${pts.join('·')}</div>":""
-    String duH=du?"<span style='font-size:10px;background:${du=='on'?'#1a3a6e':'#1a2535'};color:${du=='on'?'#60a5fa':'#475569'};padding:1px 5px;border-radius:6px;margin-left:3px'>Dust:${du}</span>":""
+    String stats=pts?"<div style='font-size:11px;color:#64748b'>${pts.join(' · ')}</div>":""
+    String duH=du?"<span style='font-size:10px;background:${du=='on'?'#1a3a6e':'#1a2535'};color:${du=='on'?'#60a5fa':'#475569'};padding:1px 5px;border-radius:6px;margin-left:3px'>D:${du}</span>":""
     String erH=er?"<div style='background:#4a1515;color:#fca5a5;border-radius:4px;padding:2px 6px;font-size:11px;margin-bottom:3px'>&#9888; ${err.capitalize()}</div>":""
-    String html="<div style='background:#0a1628;border-radius:10px;padding:8px;font-family:sans-serif'>${erH}<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'><b style='color:#e2e8f0;font-size:13px'>${nm}${duH}</b><span style='font-size:10px;background:${on?'#1a4731':'#4a1515'};color:${on?'#4ade80':'#f87171'};padding:1px 7px;border-radius:8px'>${on?'Online':'Offline'}</span></div><div style='background:${sbc};border-radius:6px;padding:5px 8px;border-left:3px solid ${slc};margin-bottom:${bars?'5':'0'}px'><b style='color:#f1f5f9;font-size:13px'>${sd}${bl}</b>${stats}</div>${bars?"<table style='width:100%;border-collapse:collapse'>${bars}</table>":""}</div>"
+    String cons=""
+    if(fp!=null||mp!=null||sp!=null){
+        cons="<div style='font-size:11px;margin-top:4px;display:flex;gap:10px'>"
+        if(fp!=null)cons+="<span style='color:#64748b'>Flt:<b style='color:${pc(fp)}'>${fp.toInteger()}%</b></span>"
+        if(mp!=null)cons+="<span style='color:#64748b'>Main:<b style='color:${pc(mp)}'>${mp.toInteger()}%</b></span>"
+        if(sp!=null)cons+="<span style='color:#64748b'>Side:<b style='color:${pc(sp)}'>${sp.toInteger()}%</b></span>"
+        cons+="</div>"
+    }
+    String html="${erH}<div style='background:#0a1628;border-radius:10px;padding:8px;font-family:sans-serif'><div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'><b style='color:#e2e8f0;font-size:13px'>${nm}${duH}</b><span style='font-size:10px;background:${on?'#1a4731':'#4a1515'};color:${on?'#4ade80':'#f87171'};padding:1px 7px;border-radius:8px'>${on?'Online':'Offline'}</span></div><div style='background:${sbc};border-radius:6px;padding:5px 8px;border-left:3px solid ${slc};'><b style='color:#f1f5f9;font-size:13px'>${sd}${bl}</b>${stats}</div>${cons}</div>"
     logDebug "xxTile chars: ${html.length()}"
     sendEvent(name:"xxTile", value:html, isStateChange:true)
 }
