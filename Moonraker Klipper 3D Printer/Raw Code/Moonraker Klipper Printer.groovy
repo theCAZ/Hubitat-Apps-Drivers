@@ -2,8 +2,8 @@
  *  Moonraker / Klipper 3D Printer Driver for Hubitat
  *
  *  Author:  jdthomas24
- *  Version: 1.0.46
- *  Date:    2026-05-04
+ *  Version: 1.0.47
+ *  Date:    2026-05-06
  *
  *  Copyright 2026
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
@@ -38,8 +38,22 @@
  *    NonaSuomy - Moonraker-Home-Assistant
  *    marcolivierarsenault - moonraker-home-assistant
  *    Arksine - Moonraker
+ *
+ *  Changes in 1.0.47:
+ *    - healthStatus now only fires on transition (offline->online, online->offline)
+ *      Redundant "online" confirmations no longer logged — eliminates ~17,000 events/day
+ *      across 3 printers at 30s poll interval
+ *    - Fixed double setOnline() per poll cycle — statusCallback no longer calls setOnline()
+ *      directly; health state is managed solely by infoCallback and explicit setOffline()
+ *    - aaStatusTile now uses fingerprint suppression (Option D):
+ *        * Always fires immediately on printState transition
+ *        * During printing/paused: only fires when fingerprint changes
+ *          (printState + filename + progress rounded to 1% + temps rounded to 1°)
+ *        * During standby with nothing changing: zero tile events
+ *        * Estimated reduction: ~1,200 -> ~100 tile events per 10-hour print per printer
+ *    - filesListTile suppressed when file list content hasn't changed since last build
  */
-public static String version() { return "1.0.46" }
+public static String version() { return "1.0.47" }
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
@@ -65,7 +79,7 @@ metadata {
         command "startLastPrint"
 
         // ── Tile (full status dashboard) ───────────────────────────
-        attribute "aaStatusTile",            "string"  // HTML status dashboard tile
+        attribute "aaStatusTile",          "string"  // HTML status dashboard tile
         attribute "filesListTile",         "string"  // HTML recent prints tile
 
         // ── Kept for automations & rules ───────────────────────────
@@ -164,6 +178,9 @@ def initialize() {
     autoLogsOff()
     logInfo "initializing Moonraker driver v${version()} at ${getBaseUrl()}"
     sendEvent(name: "healthStatus", value: "offline")
+    // v1.0.47: reset tile fingerprint on init so first poll always builds the tile
+    state.remove("lastTileFingerprint")
+    state.remove("lastFilesListHash")
     getInfo()
     runIn(2, "discoverObjects")
     schedulePoll()
@@ -172,21 +189,19 @@ def initialize() {
 void schedulePoll() {
     unschedule("refresh")
     Integer interval = (settings?.pollInterval ?: "30").toInteger()
-    if (interval == 10)  { schedule("0/10 * * * * ?", refresh) }
-    else if (interval == 30) { schedule("0/30 * * * * ?", refresh) }
-    else if (interval == 60) { runEvery1Minute(refresh) }
-    else                     { runEvery5Minutes(refresh) }
+    if (interval == 10)       { schedule("0/10 * * * * ?", refresh) }
+    else if (interval == 30)  { schedule("0/30 * * * * ?", refresh) }
+    else if (interval == 60)  { runEvery1Minute(refresh) }
+    else                      { runEvery5Minutes(refresh) }
 }
 
 void scheduleActivePoll() {
-    // Called when printing/paused — overrides standby interval with 30s
     unschedule("refresh")
     schedule("0/30 * * * * ?", refresh)
     logDebug "switched to active poll (30s)"
 }
 
 void scheduleStandbyPoll() {
-    // Called when print ends — restores user-configured standby interval
     schedulePoll()
     logDebug "switched to standby poll"
 }
@@ -214,7 +229,6 @@ Map getHeaders() {
 }
 
 void getInfo() {
-    // GET /printer/info — klipper state, hostname, version
     Map params = [
         uri:     getBaseUrl(),
         path:    "/printer/info",
@@ -230,9 +244,6 @@ void getInfo() {
 }
 
 void getStatus() {
-    // Moonraker requires each object as a separate query param:
-    // /printer/objects/query?print_stats&extruder&heater_bed&...
-    // First do a discovery call to find filament sensor name, then query
     String queryString = [
         "print_stats",
         "virtual_sdcard",
@@ -243,8 +254,6 @@ void getStatus() {
         "toolhead"
     ].join("&")
 
-    // Append any known optional sensors stored from discovery
-    // URL encode spaces in sensor names (e.g. "filament_switch_sensor filament_sensor" -> "filament_switch_sensor%20filament_sensor")
     if (state?.filamentSensorName) queryString += "&${URLEncoder.encode(state.filamentSensorName, 'UTF-8').replace('+','%20')}"
     if (state?.chamberSensorName)  queryString += "&${URLEncoder.encode(state.chamberSensorName,  'UTF-8').replace('+','%20')}"
     if (state?.mcuSensorName)      queryString += "&${URLEncoder.encode(state.mcuSensorName,       'UTF-8').replace('+','%20')}"
@@ -263,7 +272,6 @@ void getStatus() {
 }
 
 void discoverObjects() {
-    // GET /printer/objects/list - find filament sensor, chamber, mcu sensor names
     Map params = [
         uri:     getBaseUrl(),
         path:    "/printer/objects/list",
@@ -275,9 +283,7 @@ void discoverObjects() {
     } catch (e) {
         logWarn "discoverObjects() error: $e"
     }
-    // Also refresh file list on init
     runIn(3, "refreshFileList")
-    // Also get server info for printer name
     Map serverParams = [
         uri:     getBaseUrl(),
         path:    "/server/info",
@@ -297,7 +303,6 @@ void serverInfoCallback(resp, data) {
     try {
         Map json   = new JsonSlurper().parseText(resp.data)
         Map result = json?.result ?: [:]
-        logDebug "serverInfo result keys: ${result.keySet()}"
         String version = result?.moonraker_version ?: result?.api_version_string ?: ""
         if (version && version != "?") { logDebug "moonraker version: $version" }
         else { logDebug "moonraker version unavailable (Sonicpad returns ? — this is normal)" }
@@ -312,13 +317,10 @@ void discoverCallback(resp, data) {
     try {
         Map json = new JsonSlurper().parseText(resp.data)
         List objects = json?.result?.objects ?: []
-        // Find filament sensor
         String filament = objects.find{ it.startsWith("filament_switch_sensor") }
         if (filament) { state.filamentSensorName = filament; logDebug "found filament sensor: $filament" }
-        // Find chamber temp sensor
         String chamber = objects.find{ it.startsWith("temperature_sensor") && it.toLowerCase().contains("chamber") }
         if (chamber) { state.chamberSensorName = chamber; logDebug "found chamber sensor: $chamber" }
-        // Find MCU temp sensor
         String mcu = objects.find{ it.startsWith("temperature_sensor") && (it.toLowerCase().contains("mcu") || it.toLowerCase().contains("rpi") || it.toLowerCase().contains("host")) }
         if (mcu) { state.mcuSensorName = mcu; logDebug "found MCU sensor: $mcu" }
     } catch (e) {
@@ -343,12 +345,11 @@ void infoCallback(resp, data) {
             }
             sendEventX(name: "klipperState", value: klipperState)
             state.lastKlipperState = klipperState
-            // Build a readable info string for Current States using Hubitat device name
-            String hostname    = result?.hostname ?: "unknown"
-            String cpuInfo     = result?.cpu_info  ?: "unknown"
-            state.hostname = hostname
-            String info = "Name: ${device.displayName} | Host: ${hostname} | CPU: ${cpuInfo} | Port: ${settings?.port}"
+            String hostname = result?.hostname ?: "unknown"
+            String cpuInfo  = result?.cpu_info  ?: "unknown"
+            state.hostname  = hostname
             if (klipperState == "ready") {
+                // v1.0.47: setOnline() called only from infoCallback — not statusCallback
                 setOnline()
                 getStatus()
             } else {
@@ -371,7 +372,10 @@ void statusCallback(resp, data) {
         setOffline()
         return
     }
-    setOnline()
+    // v1.0.47: do NOT call setOnline() here — health state is managed solely
+    // by infoCallback and setOffline(). Calling setOnline() on every poll was
+    // the source of ~17,000 redundant healthStatus events per day across 3 printers.
+
     try {
         Map json    = new JsonSlurper().parseText(resp.data)
         Map status  = json?.result?.status ?: [:]
@@ -379,9 +383,10 @@ void statusCallback(resp, data) {
         // ---- print_stats ----
         Map printStats = status?.print_stats ?: [:]
         String printState = printStats?.state ?: "standby"
-        // LOG: only on state change - complete, error get extra attention
         String prevPrintState = device.currentValue("printState") ?: ""
-        if (prevPrintState != printState) {
+        Boolean stateChanged = (prevPrintState != printState)
+
+        if (stateChanged) {
             if (printState == "complete") {
                 logInfo "*** PRINT COMPLETE: ${device.currentValue('filename')} ***"
                 runIn(5, "refreshFileList")
@@ -405,50 +410,42 @@ void statusCallback(resp, data) {
                    logLevel: (printState == "error" ? "warn" : null))
 
         String filename = printStats?.filename ?: ""
-        // Strip folder path for display — full path still used internally
         String filenameDisplay = filename ? (filename.contains("/") ? filename.tokenize("/").last() : filename) : "none"
         String filenameClean   = filenameDisplay.replaceAll(/(?i)\.gcode$/, "")
         sendEventX(name: "filename", value: (filenameClean ?: "none"))
 
         Integer printTimeSec = printStats?.print_duration?.toInteger() ?: 0
         Integer printTimeMin = Math.ceil(printTimeSec / 60).toInteger()
+        Double filamentUsed  = printStats?.filament_used ?: 0.0
 
-        Double filamentUsed = printStats?.filament_used ?: 0.0
-
-        // Layer info (requires SET_PRINT_STATS_INFO in slicer)
         Integer currentLayer = printStats?.info?.current_layer ?: 0
         Integer totalLayers  = printStats?.info?.total_layer   ?: 0
         if (currentLayer > 0) sendEventX(name: "currentLayer", value: currentLayer)
         if (totalLayers  > 0) sendEventX(name: "totalLayers",  value: totalLayers)
 
-        // Error message — log only on change to non-none value
         String errorMsg = printStats?.message ?: ""
         if (errorMsg) sendEventX(name: "error", value: errorMsg, descriptionText: "printer error: $errorMsg", logLevel: "warn")
         else          sendEventX(name: "error", value: "none")
 
         // ---- virtual_sdcard ----
         Map vsd = status?.virtual_sdcard ?: [:]
-        Double progress = ((vsd?.progress ?: 0.0) * 100)
+        Double progress    = ((vsd?.progress ?: 0.0) * 100)
         Integer progressInt = Math.round(progress).toInteger()
 
-        // Estimate time remaining - silent updates
-        if (progressInt > 0 && progressInt < 100 && printTimeSec > 0) {
-            Integer totalEstSec   = (printTimeSec / (progress / 100)).toInteger()
-            Integer remainingSec  = totalEstSec - printTimeSec
-            Integer remainingMin  = Math.ceil(remainingSec / 60).toInteger()
-            Long etaMillis = now() + (remainingSec * 1000L)
-            String eta = new Date(etaMillis).format("h:mm a", location.timeZone)
-        } else if (progressInt == 100) {
-        }
-
-        // ---- extruder - silent updates ----
-        // extruder and bed values collected below for statusTile
-        Map extruder = status?.extruder ?: [:]
+        // ---- temps ----
+        Map extruder = status?.extruder   ?: [:]
         Map bed      = status?.heater_bed ?: [:]
-
-        // ---- fan ----
-        Map fan = status?.fan ?: [:]
+        Map fan      = status?.fan        ?: [:]
         Integer fanPct = fan?.speed != null ? Math.round((fan.speed.toDouble()) * 100).toInteger() : 0
+
+        Double hotendC     = extruder?.temperature ?: 0.0
+        Double hotendTargC = extruder?.target      ?: 0.0
+        Double bedC        = bed?.temperature      ?: 0.0
+        Double bedTargC    = bed?.target           ?: 0.0
+        Double hotendVal   = convertTemp(hotendC).round(1)
+        Double hotendTarg  = convertTemp(hotendTargC).round(1)
+        Double bedVal      = convertTemp(bedC).round(1)
+        Double bedTarg     = convertTemp(bedTargC).round(1)
 
         // ---- filament sensor ----
         Map filament = status?.find{ it.key?.startsWith("filament_switch_sensor") }?.value ?: [:]
@@ -460,121 +457,133 @@ void statusCallback(resp, data) {
                 logWarn "*** FILAMENT RUNOUT on ${device.displayName} ***"
             }
         }
-
-        // ---- filament detected attribute for rules ----
         sendEventX(name: "filamentDetected", value: filamentDetected)
 
-        // ---- display_status (M117 message) ----
-        Map display = status?.display_status ?: [:]
-        String msg = display?.message ?: ""
-
-        // ---- collect temp values for tile ----
-        Double hotendC     = extruder?.temperature ?: 0.0
-        Double hotendTargC = extruder?.target      ?: 0.0
-        Double bedC        = bed?.temperature      ?: 0.0
-        Double bedTargC    = bed?.target           ?: 0.0
-        String unit        = tempUnitLabel()
-        Double hotendVal   = convertTemp(hotendC).round(1)
-        Double hotendTarg  = convertTemp(hotendTargC).round(1)
-        Double bedVal      = convertTemp(bedC).round(1)
-        Double bedTarg     = convertTemp(bedTargC).round(1)
-
-        // ---- still send chamberTemp/mcuTemp for automation rules ----
+        // ---- chamber / mcu temps ----
         Map chamber = status?.find{ it.key?.startsWith("temperature_sensor") && it.key?.contains("chamber") }?.value ?: [:]
         if (chamber?.temperature != null) sendEventX(name: "chamberTemp (°C)", value: convertTemp(chamber.temperature.toDouble()).round(1))
         Map mcu = status?.find{ it.key?.startsWith("temperature_sensor") && it.key?.contains("mcu") }?.value ?: [:]
         if (mcu?.temperature != null) sendEventX(name: "mcuTemp (°C)", value: convertTemp(mcu.temperature.toDouble()).round(1))
 
-        // ---- build statusTile ----
-        String klipperStateNow = state?.lastKlipperState ?: device.currentValue("klipperState") ?: "unknown"
-        String healthNow       = "online"
-        String printerName     = device.displayName
-        String hostname        = state?.hostname ?: ""
-        String port            = settings?.port ?: ""
-        String filenameNow     = filenameClean ?: "none"
-        Integer progressNow    = progressInt
-        Integer printTimeNow   = printTimeMin
-        String etaNow          = (progressInt > 0 && progressInt < 100) ?
-                                    new Date(now() + ((((printTimeSec / (progressInt / 100)).toInteger()) - printTimeSec) * 1000L)).format("h:mm a", location.timeZone)
-                                    : (progressInt == 100 ? "complete" : "--")
-        Integer remainingNow   = (progressInt > 0 && progressInt < 100) ?
-                                    Math.ceil(((printTimeSec / (progressInt / 100)).toInteger() - printTimeSec) / 60).toInteger() : 0
-        Integer filamentInt    = filamentUsed.toInteger()
+        // ---- display_status ----
+        Map display = status?.display_status ?: [:]
+        String msg  = display?.message ?: ""
 
-        // state badge colors
-        String stateBg    = printState == "printing" ? "#1b4332" : printState == "paused" ? "#3d2b00" : printState == "error" ? "#3d0000" : "#16213e"
-        String stateColor = printState == "printing" ? "#00ff87" : printState == "paused" ? "#ffd166" : printState == "error" ? "#ff6b6b" : "#aaa"
-        String stateIcon  = printState == "printing" ? "&#9654; " : printState == "paused" ? "&#9646;&#9646; " : printState == "error" ? "&#9888; " : ""
-        String klipperBg  = klipperStateNow == "ready" ? "#16213e" : "#3d0000"
-        String klipperCol = klipperStateNow == "ready" ? "#00b4d8" : "#ff6b6b"
-
-        StringBuilder tile = new StringBuilder()
-        tile.append("<div style=\"font-family:sans-serif;font-size:12px;background:#1a1a2e;border-radius:10px;overflow:hidden;\">")
-
-        // Header
-        tile.append("<div style=\"background:#0f3460;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;\">")
-        tile.append("<div><div style=\"color:#00b4d8;font-weight:bold;font-size:13px;\">${printerName}</div>")
-        if (hostname) tile.append("<div style=\"color:#aaa;font-size:10px;\">${hostname} &middot; port ${port}</div>")
-        tile.append("</div>")
-        tile.append("<div style=\"display:flex;gap:6px;align-items:center;\">")
-        tile.append("<span style=\"background:#1b4332;color:#00ff87;font-size:10px;padding:2px 8px;border-radius:10px;\">&#9679; online</span>")
-        tile.append("<span style=\"background:${klipperBg};color:${klipperCol};font-size:10px;padding:2px 8px;border-radius:10px;\">klipper: ${klipperStateNow}</span>")
-        tile.append("</div></div>")
-
-        // Print state + filename bar
-        tile.append("<div style=\"background:#16213e;border-bottom:1px solid #0f3460;padding:6px 12px;display:flex;align-items:center;gap:8px;\">")
-        tile.append("<span style=\"background:${stateBg};color:${stateColor};font-size:10px;padding:2px 10px;border-radius:10px;font-weight:bold;\">${stateIcon}${printState}</span>")
-        if (filenameNow != "none") tile.append("<span style=\"color:#eee;font-size:11px;font-weight:bold;\">${filenameNow}</span>")
-        tile.append("</div>")
-
-        // Error banner — only show when error is present
-        String errorVal = device.currentValue("error") ?: "none"
-        if (errorVal && errorVal != "none") {
-            tile.append("<div style=\"background:#3d0000;border-left:3px solid #ff6b6b;padding:6px 12px;\">")
-            tile.append("<span style=\"color:#ffaaaa;font-size:11px;\">&#9888; ${errorVal}</span>")
-            tile.append("</div>")
+        // ---- ETA calc ----
+        String etaNow = "--"
+        Integer remainingNow = 0
+        if (progressInt > 0 && progressInt < 100 && printTimeSec > 0) {
+            Integer totalEstSec  = (printTimeSec / (progress / 100)).toInteger()
+            Integer remainingSec = totalEstSec - printTimeSec
+            remainingNow = Math.ceil(remainingSec / 60).toInteger()
+            Long etaMillis = now() + (remainingSec * 1000L)
+            etaNow = new Date(etaMillis).format("h:mm a", location.timeZone)
+        } else if (progressInt == 100) {
+            etaNow = "complete"
         }
 
-        // Temps row
-        tile.append("<div style=\"padding:8px 12px;\">")
-        tile.append("<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;\">")
-        tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
-        tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">HOTEND</div>")
-        tile.append("<div style=\"display:flex;align-items:baseline;gap:4px;\"><span style=\"color:#ff6b6b;font-size:16px;font-weight:bold;\">${hotendVal}°</span>")
-        tile.append("<span style=\"color:#888;font-size:10px;\">/ ${hotendTarg}° target</span></div></div>")
-        tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
-        tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">BED</div>")
-        tile.append("<div style=\"display:flex;align-items:baseline;gap:4px;\"><span style=\"color:#ffa94d;font-size:16px;font-weight:bold;\">${bedVal}°</span>")
-        tile.append("<span style=\"color:#888;font-size:10px;\">/ ${bedTarg}° target</span></div></div>")
-        tile.append("</div>")
+        // ============================================================
+        //  v1.0.47: TILE FINGERPRINT SUPPRESSION (Option D)
+        //  Always fire on printState transition.
+        //  During printing/paused: only fire when fingerprint changes
+        //    (printState + filename + progress rounded to 1% + temps rounded to 1°)
+        //  During standby/complete with nothing changing: zero tile events.
+        // ============================================================
+        Integer progressRounded  = progressInt   // already integer = 1% resolution
+        Integer hotendRounded    = hotendVal.toInteger()
+        Integer bedRounded       = bedVal.toInteger()
+        String tileFingerprint   = "${printState}|${filenameClean}|${progressRounded}|${hotendRounded}|${bedRounded}"
+        String lastFingerprint   = state?.lastTileFingerprint ?: ""
+        Boolean fingerprintChanged = (tileFingerprint != lastFingerprint)
 
-        // Progress bar (only when printing/paused)
-        if (printState in ["printing", "paused"]) {
-            tile.append("<div style=\"margin-bottom:6px;\">")
-            tile.append("<div style=\"display:flex;justify-content:space-between;margin-bottom:3px;\"><span style=\"color:#aaa;font-size:10px;\">progress</span><span style=\"color:#eee;font-size:10px;font-weight:bold;\">${progressNow}%</span></div>")
-            tile.append("<div style=\"background:#0f3460;border-radius:3px;height:5px;\"><div style=\"background:#00b4d8;width:${progressNow}%;height:5px;border-radius:3px;\"></div></div></div>")
+        if (stateChanged || fingerprintChanged) {
+            state.lastTileFingerprint = tileFingerprint
 
-            // Time row
-            tile.append("<div style=\"display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px;\">")
-            tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">elapsed</div><div style=\"color:#eee;font-size:11px;font-weight:bold;\">${printTimeNow} min</div></div>")
-            tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">remaining</div><div style=\"color:#00ff87;font-size:11px;font-weight:bold;\">${remainingNow} min</div></div>")
-            tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">ETA</div><div style=\"color:#eee;font-size:11px;font-weight:bold;\">${etaNow}</div></div>")
+            // ---- build statusTile ----
+            String klipperStateNow = state?.lastKlipperState ?: device.currentValue("klipperState") ?: "unknown"
+            String printerName     = device.displayName
+            String hostname        = state?.hostname ?: ""
+            String port            = settings?.port ?: ""
+            String filenameNow     = filenameClean ?: "none"
+
+            String stateBg    = printState == "printing" ? "#1b4332" : printState == "paused" ? "#3d2b00" : printState == "error" ? "#3d0000" : "#16213e"
+            String stateColor = printState == "printing" ? "#00ff87" : printState == "paused" ? "#ffd166" : printState == "error" ? "#ff6b6b" : "#aaa"
+            String stateIcon  = printState == "printing" ? "&#9654; " : printState == "paused" ? "&#9646;&#9646; " : printState == "error" ? "&#9888; " : ""
+            String klipperBg  = klipperStateNow == "ready" ? "#16213e" : "#3d0000"
+            String klipperCol = klipperStateNow == "ready" ? "#00b4d8" : "#ff6b6b"
+
+            StringBuilder tile = new StringBuilder()
+            tile.append("<div style=\"font-family:sans-serif;font-size:12px;background:#1a1a2e;border-radius:10px;overflow:hidden;\">")
+
+            // Header
+            tile.append("<div style=\"background:#0f3460;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;\">")
+            tile.append("<div><div style=\"color:#00b4d8;font-weight:bold;font-size:13px;\">${printerName}</div>")
+            if (hostname) tile.append("<div style=\"color:#aaa;font-size:10px;\">${hostname} &middot; port ${port}</div>")
             tile.append("</div>")
+            tile.append("<div style=\"display:flex;gap:6px;align-items:center;\">")
+            tile.append("<span style=\"background:#1b4332;color:#00ff87;font-size:10px;padding:2px 8px;border-radius:10px;\">&#9679; online</span>")
+            tile.append("<span style=\"background:${klipperBg};color:${klipperCol};font-size:10px;padding:2px 8px;border-radius:10px;\">klipper: ${klipperStateNow}</span>")
+            tile.append("</div></div>")
+
+            // Print state + filename bar
+            tile.append("<div style=\"background:#16213e;border-bottom:1px solid #0f3460;padding:6px 12px;display:flex;align-items:center;gap:8px;\">")
+            tile.append("<span style=\"background:${stateBg};color:${stateColor};font-size:10px;padding:2px 10px;border-radius:10px;font-weight:bold;\">${stateIcon}${printState}</span>")
+            if (filenameNow != "none") tile.append("<span style=\"color:#eee;font-size:11px;font-weight:bold;\">${filenameNow}</span>")
+            tile.append("</div>")
+
+            // Error banner
+            String errorVal = device.currentValue("error") ?: "none"
+            if (errorVal && errorVal != "none") {
+                tile.append("<div style=\"background:#3d0000;border-left:3px solid #ff6b6b;padding:6px 12px;\">")
+                tile.append("<span style=\"color:#ffaaaa;font-size:11px;\">&#9888; ${errorVal}</span>")
+                tile.append("</div>")
+            }
+
+            // Temps row
+            tile.append("<div style=\"padding:8px 12px;\">")
+            tile.append("<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;\">")
+            tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
+            tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">HOTEND</div>")
+            tile.append("<div style=\"display:flex;align-items:baseline;gap:4px;\"><span style=\"color:#ff6b6b;font-size:16px;font-weight:bold;\">${hotendVal}°</span>")
+            tile.append("<span style=\"color:#888;font-size:10px;\">/ ${hotendTarg}° target</span></div></div>")
+            tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
+            tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">BED</div>")
+            tile.append("<div style=\"display:flex;align-items:baseline;gap:4px;\"><span style=\"color:#ffa94d;font-size:16px;font-weight:bold;\">${bedVal}°</span>")
+            tile.append("<span style=\"color:#888;font-size:10px;\">/ ${bedTarg}° target</span></div></div>")
+            tile.append("</div>")
+
+            // Progress bar (only when printing/paused)
+            if (printState in ["printing", "paused"]) {
+                tile.append("<div style=\"margin-bottom:6px;\">")
+                tile.append("<div style=\"display:flex;justify-content:space-between;margin-bottom:3px;\"><span style=\"color:#aaa;font-size:10px;\">progress</span><span style=\"color:#eee;font-size:10px;font-weight:bold;\">${progressRounded}%</span></div>")
+                tile.append("<div style=\"background:#0f3460;border-radius:3px;height:5px;\"><div style=\"background:#00b4d8;width:${progressRounded}%;height:5px;border-radius:3px;\"></div></div></div>")
+
+                // Time row
+                tile.append("<div style=\"display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px;\">")
+                tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">elapsed</div><div style=\"color:#eee;font-size:11px;font-weight:bold;\">${printTimeMin} min</div></div>")
+                tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">remaining</div><div style=\"color:#00ff87;font-size:11px;font-weight:bold;\">${remainingNow} min</div></div>")
+                tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">ETA</div><div style=\"color:#eee;font-size:11px;font-weight:bold;\">${etaNow}</div></div>")
+                tile.append("</div>")
+            }
+
+            // Footer
+            String filamentStatus = filamentDetected == "true" ? "OK" : filamentDetected == "false" ? "RUNOUT!" : "unknown"
+            String filamentCol    = filamentDetected == "false" ? "#ff6b6b" : "#888"
+            Integer filamentInt   = filamentUsed.toInteger()
+            tile.append("<div style=\"border-top:1px solid #0f3460;padding:5px 12px;display:flex;justify-content:space-between;align-items:center;margin-top:2px;\">")
+            tile.append("<span style=\"color:#888;font-size:9px;\">fan: ${fanPct}% &nbsp;&middot;&nbsp; filament: <span style=\"color:${filamentCol}\">${filamentStatus}</span> &nbsp;&middot;&nbsp; ${filamentInt}mm used</span>")
+            tile.append("<span style=\"color:#888;font-size:9px;\">")
+            Integer completedCount = state?.completedCount ?: 0
+            String printsDoneStr = completedCount > 0 ? "${completedCount} prints done" : ""
+            if (printsDoneStr) tile.append("${printsDoneStr}")
+            tile.append("</span>")
+            tile.append("</div></div></div>")
+
+            sendEvent(name: "aaStatusTile", value: tile.toString(), displayed: false)
+            logDebug "tile updated — fingerprint: ${tileFingerprint}"
+        } else {
+            logDebug "tile suppressed — fingerprint unchanged: ${tileFingerprint}"
         }
-
-        // Footer
-        String filamentStatus = filamentDetected == "true" ? "OK" : filamentDetected == "false" ? "RUNOUT!" : "unknown"
-        String filamentCol    = filamentDetected == "false" ? "#ff6b6b" : "#888"
-        tile.append("<div style=\"border-top:1px solid #0f3460;padding:5px 12px;display:flex;justify-content:space-between;align-items:center;margin-top:2px;\">")
-        tile.append("<span style=\"color:#888;font-size:9px;\">fan: ${fanPct}% &nbsp;&middot;&nbsp; filament: <span style=\"color:${filamentCol}\">${filamentStatus}</span> &nbsp;&middot;&nbsp; ${filamentInt}mm used</span>")
-        tile.append("<span style=\"color:#888;font-size:9px;\">")
-        Integer completedCount = state?.completedCount ?: 0
-        String printsDoneStr = completedCount > 0 ? "${completedCount} prints done" : ""
-        if (printsDoneStr) tile.append("${printsDoneStr}")
-        tile.append("</span>")
-        tile.append("</div></div></div>")
-
-        sendEvent(name: "aaStatusTile", value: tile.toString(), displayed: false)
 
     } catch (e) {
         logWarn "statusCallback() parse error: $e"
@@ -669,8 +678,10 @@ void commandCallback(resp, data) {
 //  HELPERS
 // ============================================================
 void setOnline() {
+    // v1.0.47: only fire event on transition — never on redundant "online" confirmations
     if (device.currentValue("healthStatus") != "online") {
         sendEvent(name: "healthStatus", value: "online")
+        logInfo "printer is online"
     }
 }
 
@@ -680,6 +691,8 @@ void setOffline() {
         logWarn "printer is offline"
     }
     sendEventX(name: "klipperState", value: "disconnected")
+    // v1.0.47: clear tile fingerprint so next online poll rebuilds tile immediately
+    state.remove("lastTileFingerprint")
 }
 
 Double convertTemp(Double celsius) {
@@ -693,7 +706,6 @@ String tempUnitLabel() {
 
 void sendEventX(Map x) {
     if (x?.value != null && (device.currentValue(x?.name)?.toString() != x?.value?.toString() || x?.isStateChange)) {
-        // Only log if logLevel explicitly set — null means silent update
         if (x?.logLevel == "warn" && x?.descriptionText)       logWarn(x.descriptionText)
         else if (x?.logLevel == "info" && x?.descriptionText)  logInfo(x.descriptionText)
         sendEvent(name: x.name, value: x.value, unit: x?.unit, descriptionText: x?.descriptionText, isStateChange: (x?.isStateChange ?: false))
@@ -706,8 +718,6 @@ void sendEventX(Map x) {
 void refreshFileList() {
     logDebug "refreshing file list from print history"
     Integer limit = (settings?.recentFilesLimit ?: 20).toInteger()
-    // Use history API — returns jobs sorted most recent first, gives us actual print order
-    // Request extra to account for duplicates we'll deduplicate
     Map params = [
         uri:     "${getBaseUrl()}/server/history/list?limit=100&order=desc",
         headers: getHeaders(),
@@ -729,11 +739,9 @@ void filesCallback(resp, data) {
     try {
         Map json  = new JsonSlurper().parseText(resp.data)
         List jobs = json?.result?.jobs ?: []
-        Integer limit = (settings?.recentFilesLimit ?: 20).toInteger()
+        Integer limit     = (settings?.recentFilesLimit ?: 20).toInteger()
         Integer totalJobs = (json?.result?.count ?: jobs.size()).toInteger()
 
-        // Deduplicate — keep most recent occurrence of each filename
-        // Pin in_progress jobs to top
         List seen       = []
         List inProgress = []
         List recentUnique = []
@@ -753,26 +761,19 @@ void filesCallback(resp, data) {
         Integer totalCount = seen.size()
         List recentFiles = allFiles
 
-        // Store full paths in state for numbered startPrint lookup
-        // e.g. state.fileMap = ["1": "folder/file.gcode", "2": "other/file2.gcode"]
         Map fileMap = [:]
         List displayList = []
         recentFiles.eachWithIndex { file, idx ->
-            String fullPath = file?.path ?: file?.filename ?: ""
-            String number   = (idx + 1).toString()
-            fileMap[number] = fullPath
-            // Display: "1: filename [folder]" or "1: filename" if no folder
-            String name     = fullPath.contains("/") ? fullPath.tokenize("/").last() : fullPath
-            String folder   = fullPath.contains("/") ? fullPath.tokenize("/").dropRight(1).join("/") : ""
-            // Strip .gcode extension for cleaner display
+            String fullPath  = file?.path ?: file?.filename ?: ""
+            String number    = (idx + 1).toString()
+            fileMap[number]  = fullPath
+            String name      = fullPath.contains("/") ? fullPath.tokenize("/").last() : fullPath
             String cleanName = name.replaceAll(/(?i)\.gcode$/, "")
-            String display  = "${number}: ${cleanName}"
-            displayList << display
+            displayList << "${number}: ${cleanName}"
         }
         state.filePathCache = groovy.json.JsonOutput.toJson(fileMap)
         state.remove("fileMap")
 
-        // Build recentFilesForTile from the job-based allFiles list
         List recentFilesForTile = allFiles.collect { job ->
             String fullPath  = job?.filename ?: ""
             String name      = fullPath.contains("/") ? fullPath.tokenize("/").last() : fullPath
@@ -781,36 +782,32 @@ void filesCallback(resp, data) {
             [path: fullPath, name: cleanName, folder: folder, status: job?.status ?: ""]
         }
 
-        // Split into 1-10 and 11-20 for plain text attributes
         List firstTen  = displayList.size() >= 10 ? displayList[0..9]   : displayList
         List secondTen = displayList.size() > 10  ? displayList[10..-1] : []
 
-        // Count completed jobs only
         Integer completedCount = jobs.count{ it?.status == "completed" }.toInteger()
-        state.completedCount = completedCount
+        state.completedCount   = completedCount
         sendEventX(name: "printsCompleted", value: completedCount)
 
-        // Last completed print (first non-in_progress job)
         String lastPrintFile = jobs.find{ it?.status == "completed" }?.filename ?: ""
         if (lastPrintFile) {
-            String lastPrintName = lastPrintFile.contains("/") ? lastPrintFile.tokenize("/").last() : lastPrintFile
+            String lastPrintName  = lastPrintFile.contains("/") ? lastPrintFile.tokenize("/").last() : lastPrintFile
             String lastPrintClean = lastPrintName.replaceAll(/(?i)\.gcode$/, "")
             sendEventX(name: "lastPrint", value: lastPrintClean)
         }
 
-        sendEventX(name: "filesList (1-10)",  value: (firstTen.join(" | ")   ?: "none"))
+        sendEventX(name: "filesList (1-10)",  value: (firstTen.join(" | ")  ?: "none"))
         sendEventX(name: "filesList (11-20)", value: (secondTen ? secondTen.join(" | ") : "none"))
 
-        // Build HTML tile — dark styled table, in_progress pinned green at top
+        // ---- build filesListTile ----
         Integer totalJobCount = totalJobs ?: totalCount
         StringBuilder html = new StringBuilder()
         html.append("<div style=\"font-family:sans-serif;font-size:11px;background:#1a1a2e;color:#eee;border-radius:8px;padding:8px;\">")
         html.append("<div style=\"text-align:center;font-weight:bold;font-size:12px;color:#00b4d8;margin-bottom:6px;\">")
         html.append("&#128438; Recent Prints <span style=\"color:#aaa;font-size:10px;\">(top ${recentFilesForTile.size()} of ${totalJobCount} jobs)</span></div>")
 
-        // Last completed print banner
-        String lastPrintVal = device.currentValue("lastPrint") ?: ""
-        String currentPrintState = device.currentValue("printState") ?: "standby"
+        String lastPrintVal        = device.currentValue("lastPrint") ?: ""
+        String currentPrintState   = device.currentValue("printState") ?: "standby"
         if (lastPrintVal && lastPrintVal != "none" && !(currentPrintState in ["printing", "paused"])) {
             html.append("<div style=\"background:#16213e;border-left:3px solid #00ff87;padding:4px 8px;margin-bottom:6px;\">")
             html.append("<div style=\"font-size:9px;color:#aaa;\">last completed &middot; use startLastPrint to reprint</div>")
@@ -820,12 +817,12 @@ void filesCallback(resp, data) {
 
         html.append("<table style=\"width:100%;border-collapse:collapse;\">")
         recentFilesForTile.eachWithIndex { file, idx ->
-            String number    = (idx + 1).toString()
+            String number      = (idx + 1).toString()
             Boolean isPrinting = file.status == "in_progress"
-            String rowBg     = isPrinting ? "#1b4332" : (idx % 2 == 0 ? "#16213e" : "#0f3460")
-            String numColor  = isPrinting ? "#00ff87" : "#00b4d8"
-            String nameColor = isPrinting ? "#00ff87" : "#eee"
-            String indicator = isPrinting ? " &#9654; printing" : ""
+            String rowBg       = isPrinting ? "#1b4332" : (idx % 2 == 0 ? "#16213e" : "#0f3460")
+            String numColor    = isPrinting ? "#00ff87" : "#00b4d8"
+            String nameColor   = isPrinting ? "#00ff87" : "#eee"
+            String indicator   = isPrinting ? " &#9654; printing" : ""
             html.append("<tr style=\"background:${rowBg};\">")
             html.append("<td style=\"padding:3px 5px;color:${numColor};font-weight:bold;width:24px;min-width:24px;text-align:center;\">${number}</td>")
             html.append("<td style=\"padding:3px 5px;color:${nameColor};\">${file.name}${indicator}</td></tr>")
@@ -833,8 +830,20 @@ void filesCallback(resp, data) {
         html.append("</table>")
         html.append("<div style=\"color:#888;font-size:9px;margin-top:4px;text-align:center;\">Use number with startPrint command</div>")
         html.append("</div>")
-        sendEventX(name: "filesListTile", value: html.toString())
-        logDebug "found $totalCount gcode files — showing ${displayList.size()} most recent"
+
+        String newHtml = html.toString()
+
+        // v1.0.47: suppress filesListTile if content hasn't changed
+        String newHash  = newHtml.hashCode().toString()
+        String lastHash = state?.lastFilesListHash ?: ""
+        if (newHash != lastHash) {
+            state.lastFilesListHash = newHash
+            sendEventX(name: "filesListTile", value: newHtml)
+            logDebug "filesListTile updated — ${displayList.size()} files"
+        } else {
+            logDebug "filesListTile suppressed — content unchanged"
+        }
+
     } catch (e) {
         logWarn "filesCallback() parse error: $e"
     }
@@ -846,7 +855,6 @@ def startPrint(String filename) {
         logWarn "startPrint() rejected — printer is already printing"
         return
     }
-    // Accept a number (1-10) as shortcut — looks up full path from fileMap
     String resolvedFile = filename.trim()
     if (resolvedFile.isInteger()) {
         Map _fmMap = state?.filePathCache ? (new groovy.json.JsonSlurper().parseText(state.filePathCache)) : [:]
@@ -876,7 +884,6 @@ def startPrint(String filename) {
 }
 
 def startLastPrint() {
-    // Use the full path from fileMap entry 1 (most recent job) if available
     Map _fmMap = state?.filePathCache ? (new groovy.json.JsonSlurper().parseText(state.filePathCache)) : [:]
     String lastFile = _fmMap?.get("1") ?: device.currentValue("filename") ?: ""
     if (!lastFile || lastFile == "none") {
@@ -891,6 +898,7 @@ def startLastPrint() {
 //  LOG HELPERS
 // ============================================================
 def logInfo(msg)  { log.info  "${device.displayName} ${msg}" }
-def logDebug(msg) { if (deviceDebugEnable)   log.debug "${device.displayName} ${msg}" }
-def logWarn(msg)  {                           log.warn  "${device.displayName} ${msg}" }
-def logError(msg) {                           log.error "${device.displayName} ${msg}" }
+def logDebug(msg) { if (deviceDebugEnable) log.debug "${device.displayName} ${msg}" }
+def logWarn(msg)  { log.warn  "${device.displayName} ${msg}" }
+def logError(msg) { log.error "${device.displayName} ${msg}" }
+
