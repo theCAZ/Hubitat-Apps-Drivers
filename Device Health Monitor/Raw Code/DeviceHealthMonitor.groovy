@@ -915,42 +915,39 @@ def mainPage() {
             }
         }
 
-        // FIX 3: hidden: notificationSettings mirrors Battery Monitor 2.0 exactly.
-        // notificationSettings is undefined so it evaluates to false/null — the
-        // section opens on first load but collapses correctly on re-render, unlike
-        // hidden: true which collapsed it mid-edit on every submitOnChange trigger.
+        // FIX 3: hidden: true so the section closes correctly on page load/re-render.
+        // submitOnChange removed from enablePush so toggling it does not trigger a
+        // re-render that collapses the section mid-edit. All sub-inputs always render
+        // when the section is open; enablePush is checked at runtime in scheduledSummary().
         def notifOn           = settings?.enablePush != false
         def notifSectionTitle = "<b>Notifications</b> — <span style='color:${notifOn ? "blue" : "red"};'>${notifOn ? "ON" : "OFF"}</span>"
-        section(notifSectionTitle, hideable: true, hidden: notificationSettings) {
-            paragraph "ℹ️ Enable the toggle below to reveal notification settings including frequency, timing, device targets, and which health groups to include in reports."
-            input "enablePush", "bool", title: "Enable notifications", defaultValue: false, submitOnChange: true
-            if (settings?.enablePush != false) {
-                input "reportFrequency", "enum",
-                      title: "Notification Frequency:",
-                      options: ["daily": "Daily", "every2": "Every 2 Days", "every3": "Every 3 Days", "weekly": "Weekly"],
-                      defaultValue: "daily"
-                input "summaryTime", "time", title: "Notification Time:", required: false
-                input "notifyDevices", "capability.notification",
-                      title: "Notification devices", multiple: true, required: false, submitOnChange: true
-                input "enablePushover", "bool", title: "⚙️ Enable Pushover Markup", defaultValue: false
-                input "pushoverDevices", "capability.notification",
-                      title: "Pushover notification devices", multiple: true, required: false, submitOnChange: true
-                input "pushoverPrefix", "text",
-                      title: "Pushover tags",
-                      description: "e.g. [H][TITLE=Device Health Report][HTML][SELFDESTRUCT=43200]",
-                      required: false
+        section(notifSectionTitle, hideable: true, hidden: true) {
+            input "enablePush", "bool", title: "Enable notifications", defaultValue: false
+            input "reportFrequency", "enum",
+                  title: "Notification Frequency:",
+                  options: ["daily": "Daily", "every2": "Every 2 Days", "every3": "Every 3 Days", "weekly": "Weekly"],
+                  defaultValue: "daily"
+            input "summaryTime", "time", title: "Notification Time:", required: false
+            input "notifyDevices", "capability.notification",
+                  title: "Notification devices", multiple: true, required: false, submitOnChange: true
+            input "enablePushover", "bool", title: "⚙️ Enable Pushover Markup", defaultValue: false
+            input "pushoverDevices", "capability.notification",
+                  title: "Pushover notification devices", multiple: true, required: false, submitOnChange: true
+            input "pushoverPrefix", "text",
+                  title: "Pushover tags",
+                  description: "e.g. [H][TITLE=Device Health Report][HTML][SELFDESTRUCT=43200]",
+                  required: false
 
-                paragraph "<b>Report Sections:</b>"
-                input "notifyOffline",      "bool", title: "💀 Include Offline devices",              defaultValue: true
-                input "notifyPoor",         "bool", title: "🔴 Include Poor health devices",           defaultValue: true
-                input "notifyFair",         "bool", title: "🟠 Include Fair health devices",           defaultValue: true
-                input "notifyGood",         "bool", title: "🟢 Include Good health devices",           defaultValue: false
-                input "notifyExcellent",    "bool", title: "🟢 Include Excellent health devices",      defaultValue: false
-                input "suppressEmptyReport","bool", title: "🔕 Don't send notification if nothing to report", defaultValue: false
+            paragraph "<b>Report Sections:</b>"
+            input "notifyOffline",      "bool", title: "💀 Include Offline devices",              defaultValue: true
+            input "notifyPoor",         "bool", title: "🔴 Include Poor health devices",           defaultValue: true
+            input "notifyFair",         "bool", title: "🟠 Include Fair health devices",           defaultValue: true
+            input "notifyGood",         "bool", title: "🟢 Include Good health devices",           defaultValue: false
+            input "notifyExcellent",    "bool", title: "🟢 Include Excellent health devices",      defaultValue: false
+            input "suppressEmptyReport","bool", title: "🔕 Don't send notification if nothing to report", defaultValue: false
 
-                paragraph "<b>Send notification now:</b>"
-                href(name: "toSendNotification", page: "sendNotificationPage", title: "📤 Send Notification Now")
-            }
+            paragraph "<b>Send notification now:</b>"
+            href(name: "toSendNotification", page: "sendNotificationPage", title: "📤 Send Notification Now")
         }
 
         section("<b>Reports:</b>") {
