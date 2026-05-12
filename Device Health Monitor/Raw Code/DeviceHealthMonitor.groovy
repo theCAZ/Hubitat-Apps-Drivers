@@ -929,10 +929,10 @@ def mainPage() {
                   defaultValue: "daily"
             input "summaryTime", "time", title: "Notification Time:", required: false
             input "notifyDevices", "capability.notification",
-                  title: "Notification devices", multiple: true, required: false, submitOnChange: true
+                  title: "Notification devices", multiple: true, required: false
             input "enablePushover", "bool", title: "⚙️ Enable Pushover Markup", defaultValue: false
             input "pushoverDevices", "capability.notification",
-                  title: "Pushover notification devices", multiple: true, required: false, submitOnChange: true
+                  title: "Pushover notification devices", multiple: true, required: false
             input "pushoverPrefix", "text",
                   title: "Pushover tags",
                   description: "e.g. [H][TITLE=Device Health Report][HTML][SELFDESTRUCT=43200]",
