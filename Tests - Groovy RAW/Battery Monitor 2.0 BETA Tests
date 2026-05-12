@@ -7,7 +7,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
     iconUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Tests%20-%20Groovy%20RAW/Battery%20Monitor%202.0%20BETA%20Tests",
     iconX2Url: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
-    version: "2.4.23 BETA 3",
+    version: "2.4.23 BETA 4",
     doNotFocus: true
 )
 
@@ -132,6 +132,7 @@ preferences {
     page(name: "forceScanPage")
     page(name: "sendNotificationPage")
     page(name: "deviceManagePage")
+    page(name: "deviceActionsPage")
 }
 
 // ============================================================
@@ -277,10 +278,10 @@ def mainPage() {
         }
 
         section("<b>Reports:</b>") {
-            href(name: "toSummary",   page: "summaryPage",  title: "<b>Battery Summary</b>",             description: "Battery levels and health ratings")
-            href(name: "toTrends",    page: "trendsPage",   title: "<b>Battery Trends</b>",              description: "Drain rates and trend history")
-            href(name: "toHistory",   page: "historyPage",  title: "<b>Battery Replacement History</b>", description: "Auto and manual replacement log")
-            href(name: "toDevManage", page: "deviceManagePage", title: "<b>🔋 Device Battery Management</b>", description: "Assign battery types, log replacements, reset drain history")
+            href(name: "toSummary",   page: "summaryPage",      title: "<b>Battery Summary</b>",             description: "Battery levels and health ratings")
+            href(name: "toTrends",    page: "trendsPage",       title: "<b>Battery Trends</b>",              description: "Drain rates and trend history")
+            href(name: "toHistory",   page: "historyPage",      title: "<b>Battery Replacement History</b>", description: "Auto and manual replacement log")
+            href(name: "toDevManage", page: "deviceManagePage", title: "<b>🔋 Device Battery Management</b>", description: "Assign battery types, log replacements, reset drain history, view history")
         }
 
         section("<b>Help & Support</b>") {
@@ -1098,11 +1099,8 @@ def summaryPage() {
                 table += "<tr style='background-color:${summaryRowBg};'>"
 
                 def sortName   = name.toLowerCase()
-                def manageLink = hubIp
-                    ? "<a href='http://${hubIp}/installedapp/configure/${app.id}/deviceManagePage' title='Manage battery'>🔋</a>"
-                    : ""
                 if (hubIp) {
-                    table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${sortName}'><a href='http://${hubIp}/device/edit/${device.id}' target='_blank'>${name}</a> ${manageLink}</td>"
+                    table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${sortName}'><a href='http://${hubIp}/device/edit/${device.id}' target='_blank'>${name}</a></td>"
                 } else {
                     table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${sortName}'>${name}</td>"
                 }
@@ -1160,75 +1158,31 @@ def summaryPage() {
 // ===================== DEVICE MANAGE PAGE ==================
 // ============================================================
 def deviceManagePage(Map params = [:]) {
-    def selectedId = settings?.dmDeviceId
-
-    // Clear confirms when device changes mid-session so stale confirms
-    // from a previous device don't fire on the newly selected one.
-    // We do NOT clear dmDeviceId here — clearing it on every re-render
-    // (triggered by submitOnChange) caused the device to deselect before
-    // action results could display. The device selector starts empty on
-    // first entry because dmDeviceId is cleared in the result sections
-    // after a successful action, and on Done the Hubitat framework resets
-    // page-local state naturally when navigating back in.
-    if (selectedId && selectedId != settings?.dmLastDeviceId) {
-        app.updateSetting("dmReplaceConfirm", [value: false, type: "bool"])
-        app.updateSetting("dmResetConfirm",   [value: false, type: "bool"])
-        app.updateSetting("dmLastDeviceId",   [value: selectedId, type: "string"])
-    }
-
-    def device  = selectedId ? autoDevices?.find { it.id == selectedId } : null
     def devList = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
 
     def typeOptions = ["": "— Not Set —"]
     typeOptions["_sep1"] = "──────── Standard ────────"
-    ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each {
-        typeOptions[it] = it
-    }
+    ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each { typeOptions[it] = it }
     typeOptions["_sep2"] = "──────── Rechargeable ────────"
-    ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each {
-        typeOptions[it] = it
-    }
+    ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each { typeOptions[it] = it }
     typeOptions["_sep3"] = "──────── Other ────────"
     typeOptions["Other"] = "Other"
 
     dynamicPage(name: "deviceManagePage", title: "🔋 Device Battery Management", install: false) {
 
-        // ── Section 1: Device Actions — replacement, reset, history ──
-        // Clear toggle wipes device selection — the only reliable way to reset
-        // in Hubitat since settings persist across submitOnChange re-renders.
-        if (settings?.dmClearDevice == true) {
-            app.removeSetting("dmDeviceId")
-            app.removeSetting("dmLastDeviceId")
-            app.updateSetting("dmClearDevice",    [value: false, type: "bool"])
-            app.updateSetting("dmReplaceConfirm", [value: false, type: "bool"])
-            app.updateSetting("dmResetConfirm",   [value: false, type: "bool"])
-        }
-
         section("<b>⚙️ Device Actions</b>") {
-            paragraph "Select a device to log a replacement, reset drain history, or view replacement history."
-            input "dmDeviceId", "enum",
-                  title: "Select Device:",
-                  options: devList.collectEntries { [(it.id): it.displayName] },
-                  required: false,
-                  submitOnChange: true
-            if (settings?.dmDeviceId) {
-                input "dmClearDevice", "bool",
-                      title: "✖ Clear device selection",
-                      defaultValue: false,
-                      submitOnChange: true
-            }
+            paragraph "Log a battery replacement, reset drain history, view replacement history, or change battery type for a specific device.<br>" +
+                      "<span style='color:#94a3b8; font-size:12px;'>ℹ️ Note: the last selected device is remembered — change the dropdown to switch devices.</span>"
+            href(name: "toDeviceActions", page: "deviceActionsPage",
+                 title: "Open Device Actions",
+                 description: "Select a device to manage")
         }
-
-        if (!device) {
-
-        // ── Battery Types — always visible, collapsible ──────
         section("") {
-            paragraph "<b>🔋 Battery Types</b> — assign a battery type to each device so it appears in notifications and replacement history. Tap to expand and set all devices at once."
-        }
-        section("<b>🔋 Battery Types</b>", hideable: true, hidden: true) {
             paragraph "Assign a battery type and quantity to each device so Battery Monitor can include battery type in notifications and replacement history. " +
                       "This helps you know exactly what to buy when a replacement is needed.<br><br>" +
-                      "Set the type and count for as many devices as you like, then tap <b>Done</b> once to save everything."
+                      "Set the type and count for as many devices as you like, then tap <b>Done</b> to save."
+        }
+        section("<b>Battery Types</b>", hideable: true, hidden: true) {
             devList.each { dev ->
                 def currentType  = settings["battType_${dev.id}"] ?: ""
                 def currentCount = settings["battCount_${dev.id}"] ?: 1
@@ -1262,8 +1216,50 @@ def deviceManagePage(Map params = [:]) {
                       width: 4
             }
         }
-            return
+    }
+}
+
+// ============================================================
+// ===================== DEVICE ACTIONS PAGE =================
+// ============================================================
+// NOTE: Hubitat persists settings across page visits so the dropdown
+// will remember the last selected device. This is a known Hubitat
+// framework limitation — URL params passed via raw HTML links are
+// stripped, and there is no page-unload event to clear settings.
+// The dropdown approach is the only reliable option within the framework.
+def deviceActionsPage() {
+    def devList    = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
+    def selectedId = settings?.ddDeviceId
+    def device     = selectedId ? autoDevices?.find { it.id == selectedId } : null
+
+    // Clear confirms when device changes mid-session
+    if (selectedId && selectedId != settings?.ddLastDeviceId) {
+        app.updateSetting("ddReplaceConfirm", [value: false, type: "bool"])
+        app.updateSetting("ddResetConfirm",   [value: false, type: "bool"])
+        app.updateSetting("ddLastDeviceId",   [value: selectedId, type: "string"])
+    }
+
+    def typeOptions = ["": "— Not Set —"]
+    typeOptions["_sep1"] = "──────── Standard ────────"
+    ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each { typeOptions[it] = it }
+    typeOptions["_sep2"] = "──────── Rechargeable ────────"
+    ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each { typeOptions[it] = it }
+    typeOptions["_sep3"] = "──────── Other ────────"
+    typeOptions["Other"] = "Other"
+
+    dynamicPage(name: "deviceActionsPage", title: "⚙️ Device Actions", install: false) {
+
+        section("<b>Select Device</b>") {
+            paragraph "Select a device to manage its battery type, log a replacement, reset drain history, or view replacement history.<br>" +
+                      "<span style='color:#94a3b8; font-size:12px;'>ℹ️ The last selected device is remembered. Change the dropdown to switch devices.</span>"
+            input "ddDeviceId", "enum",
+                  title: "Device:",
+                  options: devList.collectEntries { [(it.id): it.displayName] },
+                  required: false,
+                  submitOnChange: true
         }
+
+        if (!device) { return }
 
         // ── Device header ────────────────────────────────────
         def level = null
@@ -1273,11 +1269,11 @@ def deviceManagePage(Map params = [:]) {
         def est         = estDays(device)
         def catalogInfo = getCatalogBatteryInfo(device) ?: "Not set"
         def dead        = isBatteryDead(device)
+        def estStr      = (est != null) ? "${est}d" : "—"
+        def drainStr    = (h == "Pending" || dead) ? "—" : "${drain}%/day"
+        def healthStr   = dead ? "🪫 Dead" : getHealthDisplay(device)
 
         section("") {
-            def estStr    = (est != null) ? "${est}d" : "—"
-            def drainStr  = (h == "Pending" || dead) ? "—" : "${drain}%/day"
-            def healthStr = dead ? "🪫 Dead" : getHealthDisplay(device)
             paragraph "<div style='background:#f0f4ff; border-left:4px solid #1a73e8; border-radius:4px; padding:10px 12px;'>" +
                       "<b style='font-size:15px;'>${device.displayName}</b><br>" +
                       "<span style='color:#374151;'>Battery: <b>${level}%</b> &nbsp;·&nbsp; " +
@@ -1287,21 +1283,45 @@ def deviceManagePage(Map params = [:]) {
                       "Type: <b>${catalogInfo}</b></span></div>"
         }
 
+        // ── Battery Type ──────────────────────────────────────
+        section("<b>🔋 Battery Type</b>") {
+            paragraph "Changes save when you tap Done."
+            input "battType_${device.id}", "enum",
+                  title: "Battery Type:",
+                  options: typeOptions,
+                  required: false,
+                  defaultValue: settings["battType_${device.id}"] ?: "",
+                  submitOnChange: true,
+                  width: 8
+            if (settings["battType_${device.id}"] == "Other") {
+                input "battCustomType_${device.id}", "text",
+                      title: "Custom type:",
+                      description: "e.g. CR17450, 4SR44",
+                      required: false,
+                      defaultValue: settings["battCustomType_${device.id}"] ?: "",
+                      width: 8
+            }
+            input "battCount_${device.id}", "number",
+                  title: "Qty:",
+                  defaultValue: settings["battCount_${device.id}"] ?: 1,
+                  required: false,
+                  range: "1..99",
+                  width: 4
+        }
+
         // ── Manual Replacement ───────────────────────────────
         section("<b>✅ Log Manual Replacement</b>") {
             paragraph "Logs a replacement entry, resets drain history, and restarts the learning period."
-            input "dmReplaceConfirm", "bool",
+            input "ddReplaceConfirm", "bool",
                   title: "Confirm — log battery replacement now",
                   defaultValue: false,
                   submitOnChange: true
         }
-        if (settings?.dmReplaceConfirm == true) {
+        if (settings?.ddReplaceConfirm == true) {
             section("<b>Replacement Result</b>") {
                 def currentLevel = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
                 logReplacement(device, currentLevel, true)
-                app.updateSetting("dmReplaceConfirm", [value: false, type: "bool"])
-                app.removeSetting("dmDeviceId")
-                app.removeSetting("dmLastDeviceId")
+                app.updateSetting("ddReplaceConfirm", [value: false, type: "bool"])
                 paragraph "✅ Battery replacement logged for <b>${device.displayName}</b> at ${currentLevel}%. Drain history reset — health will show ⏳ Pending while fresh data is collected."
             }
         }
@@ -1309,15 +1329,15 @@ def deviceManagePage(Map params = [:]) {
         // ── Reset Drain History ──────────────────────────────
         section("<b>🔄 Reset Drain History</b>") {
             paragraph "Clears drain samples and resets health to ⏳ Pending without logging a replacement. Use when a device shows incorrect Heavy Drain."
-            input "dmResetConfirm", "bool",
+            input "ddResetConfirm", "bool",
                   title: "Confirm — reset drain history without logging a replacement",
                   defaultValue: false,
                   submitOnChange: true
         }
-        if (settings?.dmResetConfirm == true) {
+        if (settings?.ddResetConfirm == true) {
             section("<b>Reset Result</b>") {
                 def existing = state.history[device.id] ?: [:]
-                def resetData = [
+                state.history[device.id] = [
                     lastLevel:     existing.lastLevel     ?: (device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100),
                     lastDate:      now(),
                     lastScanDate:  now(),
@@ -1328,12 +1348,9 @@ def deviceManagePage(Map params = [:]) {
                     samples:       [],
                     zeroCount:     0
                 ]
-                state.history[device.id] = resetData
-                state.trend[device.id]   = "Stable"
+                state.trend[device.id] = "Stable"
                 state.history = state.history
-                app.updateSetting("dmResetConfirm", [value: false, type: "bool"])
-                app.removeSetting("dmDeviceId")
-                app.removeSetting("dmLastDeviceId")
+                app.updateSetting("ddResetConfirm", [value: false, type: "bool"])
                 paragraph "✅ Drain history reset for <b>${device.displayName}</b>. Health will show ⏳ Pending while fresh samples are collected."
             }
         }
@@ -1367,7 +1384,6 @@ def deviceManagePage(Map params = [:]) {
                 paragraph "<div style='overflow-x:auto;'>${table}</div>"
             }
         }
-
     }
 }
 
@@ -1788,12 +1804,14 @@ def infoPage(Map params = [:]) {
 
         section("<b>🔋 Device Battery Management</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "Tap the 🔋 icon next to any device name in the Battery Summary to open that device's management page.<br><br>" +
-                      "<b>From the device management page you can:</b><br>" +
+                      "Open 🔋 Device Battery Management from the main Reports menu.<br><br>" +
+                      "<b>Device Actions</b> — tap Open Device Actions and select a device from the dropdown to:<br>" +
                       "• Assign or change battery type and count<br>" +
                       "• Log a manual battery replacement (resets drain history and logs a replacement entry)<br>" +
                       "• Reset drain history without logging a replacement<br>" +
                       "• View all replacement history entries for that device<br><br>" +
+                      "<b>Note:</b> Hubitat remembers the last selected device in the dropdown — change it to switch to a different device.<br><br>" +
+                      "<b>Battery Types</b> — tap to expand a full list of all devices. Set battery type and count for as many devices as you like, then tap Done once to save everything.<br><br>" +
                       "Battery type changes take effect immediately in the summary table, notifications, and replacement history.</div>"
         }
 
@@ -1864,3 +1882,4 @@ def infoPage(Map params = [:]) {
         }
     }
 }
+
