@@ -69,6 +69,28 @@ def updated() {
         }
     }
     if (didMigrate) state.replacements = state.replacements
+
+    // v2.4.24: migrate legacy battInfo_ catalog entries to battType_/battCount_
+    // Previously this ran only when opening Battery Catalog. Now runs on every
+    // update so existing users don't lose catalog data after Catalog was removed.
+    def devList2 = autoDevices ?: []
+    devList2.each { device ->
+        def legacyInfo = settings["battInfo_${device.id}"]
+        if (legacyInfo && legacyInfo != "" && !legacyInfo.startsWith("_sep") && !settings["battType_${device.id}"]) {
+            def parts = legacyInfo.tokenize(" x")
+            if (parts.size() >= 2) {
+                def migratedType  = parts[0..-2].join(" ")
+                def migratedCount = parts[-1]
+                app.updateSetting("battType_${device.id}",  [value: migratedType,  type: "enum"])
+                app.updateSetting("battCount_${device.id}", [value: migratedCount.toInteger(), type: "number"])
+            } else {
+                app.updateSetting("battType_${device.id}", [value: legacyInfo, type: "enum"])
+                app.updateSetting("battCount_${device.id}", [value: 1, type: "number"])
+            }
+            app.removeSetting("battInfo_${device.id}")
+            if (debugMode) log.debug "Migrated battery catalog entry for ${device.displayName}: ${legacyInfo}"
+        }
+    }
 }
 
 def disableDebugLogging() {
@@ -106,14 +128,9 @@ preferences {
     page(name: "historyPage")
     page(name: "deleteHistoryPage")
     page(name: "deleteHistoryConfirmPage")
-    page(name: "manualReplacementPage")
-    page(name: "manualReplacementConfirmPage")
     page(name: "infoPage")
-    page(name: "batteryCatalogPage")
     page(name: "forceScanPage")
     page(name: "sendNotificationPage")
-    page(name: "resetDrainPage")
-    page(name: "resetDrainConfirmPage")
     page(name: "deviceManagePage")
 }
 
@@ -260,11 +277,10 @@ def mainPage() {
         }
 
         section("<b>Reports:</b>") {
-            href(name: "toSummary",   page: "summaryPage",           title: "<b>Battery Summary</b>",             description: "Battery levels and health ratings")
-            href(name: "toTrends",    page: "trendsPage",            title: "<b>Battery Trends</b>",              description: "Drain rates and trend history")
-            href(name: "toHistory",   page: "historyPage",           title: "<b>Battery Replacement History</b>", description: "Auto and manual replacement log")
-            href(name: "toManualRep", page: "manualReplacementPage", title: "<b>Manual Battery Replacement</b>",  description: "Log a replacement now")
-            href(name: "toCatalog",   page: "batteryCatalogPage",    title: "<b>🔋 Battery Catalog</b>",          description: "Battery types per device")
+            href(name: "toSummary",   page: "summaryPage",  title: "<b>Battery Summary</b>",             description: "Battery levels and health ratings")
+            href(name: "toTrends",    page: "trendsPage",   title: "<b>Battery Trends</b>",              description: "Drain rates and trend history")
+            href(name: "toHistory",   page: "historyPage",  title: "<b>Battery Replacement History</b>", description: "Auto and manual replacement log")
+            href(name: "toDevManage", page: "deviceManagePage", title: "<b>🔋 Device Battery Management</b>", description: "Assign battery types, log replacements, reset drain history")
         }
 
         section("<b>Help & Support</b>") {
@@ -283,7 +299,7 @@ def mainPage() {
 
         section("<b>Diagnostics</b>") {
             input "debugMode", "bool", title: "Debug Logging (auto-disables after 30 min)", defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.4.23</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.4.24</span>"
         }
     }
 }
@@ -1160,10 +1176,8 @@ def deviceManagePage(Map params = [:]) {
         def devList = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
 
         section("<b>Select Device</b>") {
-            href(name: "backToSummary", page: "summaryPage", title: "← Back to Battery Summary")
-            href(name: "backToMain", page: "mainPage", title: "← Back to Main Page")
             paragraph "Select a device to manage its battery type, log a replacement, reset drain history, or view replacement history."
-            paragraph "<span style='color:#94a3b8; font-size:12px;'>ℹ️ Tap <b>Done</b> to save battery type changes. Done returns to this page — use the links above to navigate away.</span>"
+            paragraph "<span style='color:#94a3b8; font-size:12px;'>ℹ️ Tap <b>Done</b> to save battery type changes.</span>"
             input "dmDeviceId", "enum",
                   title: "Device:",
                   options: devList.collectEntries { [(it.id): it.displayName] },
@@ -1307,10 +1321,7 @@ def deviceManagePage(Map params = [:]) {
             }
         }
 
-        section("") {
-            href(name: "backToSummaryBottom", page: "summaryPage", title: "← Back to Battery Summary")
-            href(name: "backToMainBottom", page: "mainPage", title: "← Back to Main Page")
-        }
+
     }
 }
 
@@ -1428,108 +1439,10 @@ ${hubIp ? "<span style='color:red; font-weight:bold;'>⚠ Device links below are
 """
         }
 
-        section("<b>🔄 Reset Drain History</b>", hideable: true, hidden: true) {
-            paragraph "Use this to reset drain history for specific devices. " +
-                      "This clears accumulated samples and resets drain to default — health returns to ⏳ Pending. " +
-                      "Use when a device shows incorrect Heavy Drain due to stale or inaccurate samples. " +
-                      "<b>This does not log a battery replacement.</b>"
-            href(name: "toResetDrain", page: "resetDrainPage",
-                 title: "🔄 Reset Drain History",
-                 description: "Select devices to reset")
-        }
     }
 }
 
 // ============================================================
-// ===================== RESET DRAIN PAGE ====================
-// ============================================================
-def resetDrainPage() {
-    app.removeSetting("resetDrainDevices")
-    app.updateSetting("resetDrainConfirm", [value: false, type: "bool"])
-
-    def devList = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
-
-    dynamicPage(name: "resetDrainPage", title: "Reset Drain History", install: false) {
-        section("<b>Select Devices to Reset</b>") {
-            if (!devList || devList.size() == 0) {
-                paragraph "No battery devices available. Please select devices on the main page first."
-            } else {
-                paragraph "Select one or more devices to reset. Their drain history, samples, and trend will be cleared. " +
-                          "Health will return to Pending until new samples are collected. " +
-                          "<b>Battery replacement history is not affected.</b>"
-                input "resetDrainDevices", "enum",
-                      title: "Select devices to reset",
-                      options: devList.collectEntries { [(it.id): "${it.displayName} (${it.currentValue('battery') ?: '?'}% - ${state.trend[it.id] ?: 'Unknown'})"] }
-                                      .sort { a, b -> a.value <=> b.value },
-                      multiple: true,
-                      required: false
-            }
-        }
-        section("<b>Confirm Reset</b>") {
-            input "resetDrainConfirm", "bool",
-                  title: "Confirm - clear drain history for selected devices",
-                  defaultValue: false
-        }
-        section() {
-            href(name: "toResetDrainConfirm", page: "resetDrainConfirmPage", title: "Submit Reset")
-        }
-    }
-}
-
-// ============================================================
-// ================ RESET DRAIN CONFIRM PAGE =================
-// ============================================================
-def resetDrainConfirmPage() {
-    def devList = autoDevices ?: []
-
-    dynamicPage(name: "resetDrainConfirmPage", title: "Reset Drain History", install: false) {
-        section("<b>Result</b>") {
-            if (!resetDrainConfirm) {
-                paragraph "Reset cancelled - confirm checkbox was not checked."
-            } else if (!resetDrainDevices) {
-                paragraph "No devices selected."
-            } else {
-                def successCount = 0
-                def resetNames   = []
-
-                resetDrainDevices.each { deviceId ->
-                    def device = devList.find { it.id == deviceId }
-                    if (device) {
-                        def existing  = state.history[device.id] ?: [:]
-                        def resetData = [
-                            lastLevel:     existing.lastLevel     ?: (device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100),
-                            lastDate:      now(),
-                            lastScanDate:  now(),
-                            firstSeenDate: existing.firstSeenDate ?: existing.replacedTime ?: existing.lastDate ?: now(),
-                            replacedTime:  existing.replacedTime,
-                            justReplaced:  existing.justReplaced  ?: false,
-                            drain:         0.3,
-                            samples:       [],
-                            zeroCount:     0
-                        ]
-                        state.history[device.id] = resetData
-                        state.trend[device.id]   = "Stable"
-                        state.history = state.history
-
-                        resetNames << device.displayName
-                        successCount++
-                        if (debugMode) log.debug "Reset drain history for ${device.displayName}"
-                    }
-                }
-
-                if (successCount > 0) {
-                    paragraph "Drain history reset for ${successCount} device(s): " +
-                              resetNames.join(", ") +
-                              ". Health will show Pending while fresh samples are collected. " +
-                              "Return to Battery Trends to confirm."
-                } else {
-                    paragraph "No valid devices found."
-                }
-            }
-        }
-    }
-}
-
 // ============================================================
 // ===================== HISTORY PAGE ========================
 // ============================================================
@@ -1651,96 +1564,6 @@ def deleteHistoryConfirmPage() {
 }
 
 // ============================================================
-// ===================== MANUAL REPLACEMENT PAGE =============
-// ============================================================
-def manualReplacementPage() {
-    if (state.replacements == null) state.replacements = []
-    def devList = autoDevices ?: []
-
-    app.removeSetting("replaceDevicesManual")
-    app.updateSetting("replaceConfirmManual", [value: false, type: "bool"])
-
-    dynamicPage(name: "manualReplacementPage", title: "Manual Battery Replacement", install: false) {
-        section("<b>Select Devices</b>") {
-            if (!devList || devList.size() == 0) {
-                paragraph "⚠ No battery devices available. Please select devices on the main page first."
-            } else {
-                input "replaceDevicesManual", "enum",
-                      title: "Select Devices (can choose multiple)",
-                      options: devList.collectEntries { [(it.id): it.displayName] }
-                                      .sort { a, b -> a.value <=> b.value },
-                      multiple: true,
-                      required: false
-            }
-        }
-        section("<b>Confirm Replacement</b>") {
-            input "replaceConfirmManual", "bool",
-                  title: "Confirm Battery Replaced",
-                  required: false
-        }
-        section() {
-            href(name: "toManualRepConfirm", page: "manualReplacementConfirmPage", title: "Submit Replacement")
-        }
-    }
-}
-
-// ============================================================
-// ================ MANUAL REPLACEMENT CONFIRM PAGE ==========
-// ============================================================
-def manualReplacementConfirmPage() {
-    if (state.replacements == null) state.replacements = []
-    def devList = autoDevices ?: []
-
-    dynamicPage(name: "manualReplacementConfirmPage", title: "Confirm Replacement", install: false) {
-        section("<b>Replacement Registered</b>") {
-            if (replaceDevicesManual && replaceConfirmManual) {
-                def successCount = 0
-
-                replaceDevicesManual.each { deviceId ->
-                    def device = devList.find { it.id == deviceId }
-                    if (device) {
-                        def level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
-                        def replacementData = [
-                            lastLevel:     level,
-                            lastDate:      now(),
-                            lastScanDate:  now(),
-                            firstSeenDate: now(),
-                            drain:         0.3,
-                            samples:       [],
-                            zeroCount:     0,
-                            justReplaced:  true,
-                            replacedTime:  now()
-                        ]
-                        state.history[device.id] = replacementData
-                        state.trend[device.id]   = "Stable"
-
-                        state.replacements = state.replacements?.findAll { it.device != device.displayName } ?: []
-                        state.replacements << [
-                            deviceId: device.id,
-                            device:   device.displayName,
-                            level:    level,
-                            date:     new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
-                            type:     "manual"
-                        ]
-                        state.replacements = state.replacements.sort { a, b -> b.date <=> a.date }
-                        state.history = state.history
-                        successCount++
-                    }
-                }
-
-                if (successCount > 0) {
-                    paragraph "✅ Battery replacement for ${successCount} device(s) has been recorded. Health will show ⏳ Pending while fresh data is collected."
-                } else {
-                    paragraph "❌ No valid devices found. Please select devices on the main page first."
-                }
-            } else {
-                paragraph "⚠ Please select device(s) and confirm replacement or use the Back button to cancel."
-            }
-        }
-    }
-}
-
-// ============================================================
 // ============= SEND NOTIFICATION PAGE ======================
 // ============================================================
 def sendNotificationPage() {
@@ -1824,81 +1647,6 @@ def forceScanPage() {
                       "<b>Note:</b> A new drain sample is only recorded if the battery level " +
                       "has changed since the last reading. Devices reporting the same level " +
                       "will not generate a new sample."
-        }
-    }
-}
-
-// ============================================================
-// ===================== BATTERY CATALOG PAGE ================
-// ============================================================
-def batteryCatalogPage() {
-    dynamicPage(name: "batteryCatalogPage", title: "🔋 Battery Catalog", install: false) {
-
-        def devList = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
-
-        if (!devList) {
-            section() { paragraph "No devices found. Please select devices on the main page first." }
-            return
-        }
-
-        def typeOptions = ["": "— Not Set —"]
-        typeOptions["_sep1"] = "──────── Standard ────────"
-        ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each {
-            typeOptions[it] = it
-        }
-        typeOptions["_sep2"] = "──────── Rechargeable ────────"
-        ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each {
-            typeOptions[it] = it
-        }
-        typeOptions["_sep3"] = "──────── Other ────────"
-        typeOptions["Other"] = "Other"
-
-        devList.each { device ->
-            def legacyInfo = settings["battInfo_${device.id}"]
-            if (legacyInfo && legacyInfo != "" && !legacyInfo.startsWith("_sep") && !settings["battType_${device.id}"]) {
-                def parts = legacyInfo.tokenize(" x")
-                if (parts.size() >= 2) {
-                    def migratedType  = parts[0..-2].join(" ")
-                    def migratedCount = parts[-1]
-                    app.updateSetting("battType_${device.id}",  [value: migratedType,  type: "enum"])
-                    app.updateSetting("battCount_${device.id}", [value: migratedCount.toInteger(), type: "number"])
-                } else {
-                    app.updateSetting("battType_${device.id}", [value: legacyInfo, type: "enum"])
-                    app.updateSetting("battCount_${device.id}", [value: 1, type: "number"])
-                }
-                app.removeSetting("battInfo_${device.id}")
-            }
-        }
-
-        section("") {
-            paragraph "<span style='color:red; font-weight:bold;'>⚠ Select a battery type and enter the count for each device below. Tap Done to save.</span>"
-            paragraph "ℹ️ Existing entries from previous versions are automatically migrated to the new format when you open this page."
-        }
-
-        section("<b>Battery Catalog</b>") {
-            devList.each { device ->
-                section() {
-                    paragraph "<b>${device.displayName.trim()}</b>"
-                    input "battType_${device.id}", "enum",
-                          title: "Battery Type:",
-                          options: typeOptions,
-                          required: false,
-                          defaultValue: settings["battType_${device.id}"] ?: "",
-                          submitOnChange: true
-                    if (settings["battType_${device.id}"] == "Other") {
-                        input "battCustomType_${device.id}", "text",
-                              title: "Custom Battery Type:",
-                              description: "Enter battery type (e.g. CR17450, 4SR44, 28A)",
-                              required: false,
-                              defaultValue: settings["battCustomType_${device.id}"] ?: ""
-                    }
-                    input "battCount_${device.id}", "number",
-                          title: "Battery Count:",
-                          defaultValue: settings["battCount_${device.id}"] ?: 1,
-                          required: false,
-                          range: "1..99"
-                }
-            }
         }
     }
 }
@@ -2042,18 +1790,18 @@ def infoPage(Map params = [:]) {
                       "• <b>Contact &amp; motion sensors</b> — drain adjusted down by 50%, standard 5-sample gate<br>" +
                       "• <b>Smoke &amp; CO detectors</b> — drain adjusted down by 50%, requires 7 samples, slow reporter gate<br>" +
                       "• Other types use the standard calculation (5 samples)<br><br>" +
-                      "<b>Battery Catalog:</b><br>" +
-                      "Select a battery type from the dropdown for each device. If your battery type is not listed, select <b>Other</b> — a free text field will appear so you can enter any custom type (e.g. CR17450, 4SR44, 28A). " +
+                      "<b>Battery Type Assignment:</b><br>" +
+                      "Open 🔋 Device Battery Management from the main Reports menu, select the device, and assign its battery type. If your type is not listed, select <b>Other</b> — a free text field will appear for custom types (e.g. CR17450, 4SR44, 28A). " +
                       "Custom types appear in notifications and replacement history just like standard types.<br><br>" +
                       "<b>If a device shows High Drain or Poor health after Pending:</b><br>" +
                       "• Check signal strength and mesh routing<br>" +
                       "• Verify reporting frequency in the device driver<br>" +
-                      "• Confirm correct battery type in the Battery Catalog<br>" +
+                      "• Confirm correct battery type in 🔋 Device Battery Management<br>" +
                       "• Consider environmental factors (temperature, distance)</div>"
         }
 
         section("<b>🔄 Reset Drain History</b>") {
-            paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'><b>Reset Drain History</b> is available on the Device Battery Management page (tap 🔋 in the summary) or at the bottom of the Battery Trends page. " +
+            paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'><b>Reset Drain History</b> is available on the 🔋 Device Battery Management page — select a device and use the Reset Drain History section.<br><br>" +
                       "It clears accumulated drain samples and resets a device back to ⏳ Pending without logging a battery replacement.<br><br>" +
                       "<b>What it resets:</b> drain samples, drain rate, trend, health.<br>" +
                       "<b>What it does NOT change:</b> battery replacement history, last battery level, last seen date.</div>"
@@ -2063,7 +1811,7 @@ def infoPage(Map params = [:]) {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>• Let new batteries run for at least a week before trusting health ratings<br>" +
                       "• Use the 🔋 icon in Battery Summary to assign battery types and log replacements directly from the summary<br>" +
                       "• Set Scan Interval to Hourly to build health ratings faster<br>" +
-                      "• After replacing a battery tap 🔋 next to the device name and log it manually to reset history immediately<br>" +
+                      "• After replacing a battery open 🔋 Device Battery Management, select the device, and log the replacement<br>" +
                       "• Use Reset Drain History on locks and sensors if they show Heavy Drain after first install<br>" +
                       "• Use Notification Snooze when traveling so you are not notified about batteries you cannot replace<br>" +
                       "• After updating the app, switch to Hourly scan temporarily to rebuild sample data faster</div>"
