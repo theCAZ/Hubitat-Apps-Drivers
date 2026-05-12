@@ -915,12 +915,13 @@ def mainPage() {
             }
         }
 
-        // FIX 3: hidden: false so the section never collapses on re-render when
-        // enablePush is toggled — same pattern as Battery Monitor 2.0.
-        // submitOnChange kept on enablePush so sub-inputs show/hide correctly.
+        // FIX 3: hidden: notificationSettings mirrors Battery Monitor 2.0 exactly.
+        // notificationSettings is undefined so it evaluates to false/null — the
+        // section opens on first load but collapses correctly on re-render, unlike
+        // hidden: true which collapsed it mid-edit on every submitOnChange trigger.
         def notifOn           = settings?.enablePush != false
         def notifSectionTitle = "<b>Notifications</b> — <span style='color:${notifOn ? "blue" : "red"};'>${notifOn ? "ON" : "OFF"}</span>"
-        section(notifSectionTitle, hideable: true, hidden: false) {
+        section(notifSectionTitle, hideable: true, hidden: notificationSettings) {
             paragraph "ℹ️ Enable the toggle below to reveal notification settings including frequency, timing, device targets, and which health groups to include in reports."
             input "enablePush", "bool", title: "Enable notifications", defaultValue: false, submitOnChange: true
             if (settings?.enablePush != false) {
