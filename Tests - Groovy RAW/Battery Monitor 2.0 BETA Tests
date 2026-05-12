@@ -1749,15 +1749,12 @@ def infoPage(Map params = [:]) {
         section("<b>⏳ Pending Health & Samples</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>The app withholds a health verdict and shows <b>⏳ Pending</b> until enough data is collected. " +
                       "This prevents false Poor ratings from sparse early readings. While Pending, Trend and Drain show 📈 — the app is actively learning.<br><br>" +
-                      "The Battery Health column shows a progress bar for Pending devices so you can see exactly where each device stands:<br>" +
-                      "<code style='background:#f0f0f0; padding:2px 6px; border-radius:3px;'>⏳ 3/5 samples · 3/5 days</code><br><br>" +
+                      "Pending devices show inline progress in the Battery Health column — for example: <b>⏳ 3/5 samples · 3/5 days</b><br><br>" +
                       "<b>Standard gate</b> — both must be met:<br>" +
                       "• At least <b>5 samples</b> collected (7 for locks, smoke, and CO detectors)<br>" +
                       "• At least <b>5 days</b> since the battery was replaced or first seen<br><br>" +
                       "<b>Slow reporter gate</b> — for devices like smoke detectors that rarely report:<br>" +
                       "• After <b>14 days</b> with at least <b>2 samples</b>, Pending clears automatically<br><br>" +
-                      "<b>v2.4.12 change:</b> Contact and motion sensors now use the standard 5-sample gate. " +
-                      "Previously they shared the 7-sample gate with locks and smoke detectors, but contact and motion sensors report frequently enough that the extended gate was unnecessary.<br><br>" +
                       "<b>Note:</b> Updating or reinstalling the app resets the sample timing gates. All devices will return to Pending temporarily while fresh data is collected.<br><br>" +
                       "<b>Confidence weighting:</b> Early readings carry less weight than established ones. " +
                       "With 5 samples the blend is partial — by 10 samples the full measured drain is used.</div>"
