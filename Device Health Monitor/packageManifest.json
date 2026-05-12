@@ -1,12 +1,12 @@
 {
   "packageName": "Device Health Monitor",
   "author": "Jdthomas24",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "category": "Monitoring",
   "description": "Monitor device check-in health across Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable — learns each device's normal pattern and alerts you when something goes quiet.",
   "dateReleased": "4/28/26",
   "minimumHEVersion": "2.3.0",
-  "releaseNotes": "v1.4.5: Expanded App Guide with full Hue Bridge verification docs, baseline learning explanation, protocol/state override reference, and tips.",
+  "releaseNotes": "v1.4.6: Fixed State Attribute Overrides not showing presence/Life360, locks, water, smoke, contact, and motion devices on fresh hubs. Capability scanning now ensures newly paired devices appear before currentStates populates. Fixed Notifications section collapsing when toggling Enable Notifications.",
   "apps": [
     {
       "id": "a045ac2b-5fe0-4159-830b-8550899d9553",
