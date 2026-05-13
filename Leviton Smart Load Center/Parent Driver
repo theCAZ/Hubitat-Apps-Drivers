@@ -3,7 +3,7 @@
  *
  * Ported from: https://github.com/rwoldberg/ldata-ha
  * Original author: rwoldberg (Home Assistant integration)
- * Hubitat port: Community port
+ * Hubitat port: jdthomas24
  *
  * Supports:
  *   - Leviton LDATA (1st gen Smart Breaker Data Hub)
