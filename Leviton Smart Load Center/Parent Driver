@@ -32,7 +32,7 @@ import hubitat.helper.InterfaceUtils
 metadata {
     definition(
         name: "Leviton Smart Load Center LDATA Parent",
-        namespace: "community",
+        namespace: "jdthomas24",
         author: "Community Port from rwoldberg/ldata-ha",
         description: "Leviton Smart Panel (LDATA/LWHEM) integration with breaker monitoring and control"
     ) {
