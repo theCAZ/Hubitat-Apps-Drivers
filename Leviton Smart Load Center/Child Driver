@@ -3,7 +3,7 @@
  *
  * Ported from: https://github.com/rwoldberg/ldata-ha
  * Original author: rwoldberg (Home Assistant integration)
- * Hubitat port: jdthomas24
+ * Hubitat port: Community port
  *
  * This child driver is automatically created by the LevitonLDATA_Parent driver.
  * It represents either a Smart Circuit Breaker or a CT clamp sensor.
@@ -28,7 +28,7 @@
 
 metadata {
     definition(
-        name       : "Leviton Smart Load Center LDATA Child",
+        name       : "Leviton Smart Load Center Child",
         namespace  : "jdthomas24",
         author     : "Community Port from rwoldberg/ldata-ha",
         description: "Child device for Leviton Smart Panel breaker or CT sensor"
