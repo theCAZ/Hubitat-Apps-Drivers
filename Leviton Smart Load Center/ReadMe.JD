@@ -42,7 +42,7 @@ Step 3 — Create the Parent Device
 Navigate to Devices
 Click Add Device → Virtual
 Give the device a name (e.g. Leviton Panel)
-Set Type to Leviton LDATA Parent
+Set Type to Leviton Smart Load Center LDATA Parent
 Click Save Device
 
 Step 4 — Configure Credentials
@@ -89,7 +89,7 @@ Breaker control always goes through the Leviton cloud — it will not work if yo
 
 
 Architecture
-Hubitat Device: Leviton LDATA Parent
+Hubitat Device: Leviton Smart Load Center LDATA Parent
 │
 │  Manages: Authentication, WebSocket, REST polling, panel discovery
 │
