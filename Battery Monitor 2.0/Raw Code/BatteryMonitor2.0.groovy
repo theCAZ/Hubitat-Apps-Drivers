@@ -1101,7 +1101,7 @@ tr:hover td{background:#1a1a1a}
 .badge-fair{background:#3b2a12;color:#f97316}
 .badge-good{background:#12301a;color:#22c55e}
 .badge-excellent{background:#12301a;color:#22c55e}
-.badge-dead{background:#2a1a2a;color:#9b59b6}
+.badge-dead{background:#3b1212;color:#ef4444}
 .badge-pending{background:#1e1e1e;color:#94a3b8}
 .batt-bg{width:80px;background:#333;height:5px;border-radius:3px;overflow:hidden;display:inline-block;vertical-align:middle;margin-left:6px}
 .batt-fg{height:100%}
@@ -1123,13 +1123,13 @@ tr:hover td{background:#1a1a1a}
         html.append("<div class='summary-box'>")
         html.append("<div class='summary-card' style='border-bottom-color:#ef4444;'><b>${poorCount}</b><span>Low Battery</span></div>")
         html.append("<div class='summary-card' style='border-bottom-color:#f97316;'><b>${staleCount}</b><span>Stale</span></div>")
-        html.append("<div class='summary-card' style='border-bottom-color:#f1c40f;'><b>${highDrainCount}</b><span>High Drain</span></div>")
-        html.append("<div class='summary-card' style='border-bottom-color:#9b59b6;'><b>${deadCount}</b><span>Dead</span></div>")
-        html.append("<div class='summary-card' style='border-bottom-color:#3498db;'><b>${totalCount}</b><span>Total</span></div>")
+        html.append("<div class='summary-card' style='border-bottom-color:#f97316;'><b>${highDrainCount}</b><span>High Drain</span></div>")
+        html.append("<div class='summary-card' style='border-bottom-color:#ef4444;'><b>${deadCount}</b><span>Dead</span></div>")
+        html.append("<div class='summary-card' style='border-bottom-color:#1a73e8;'><b>${totalCount}</b><span>Total</span></div>")
         html.append("</div>")
 
         // Action buttons
-        html.append("<a href='refresh?access_token=${state.accessToken}' class='btn'>🩺 Force Scan Now</a>")
+        html.append("<a href='refresh?access_token=${state.accessToken}' class='btn'>🔄 Force Scan Now</a>")
 
         // Device table
         html.append("<div class='section-title'>All Devices</div>")
@@ -1983,8 +1983,3 @@ def infoPage(Map params = [:]) {
         }
     }
 }
-
-
-
-
-
