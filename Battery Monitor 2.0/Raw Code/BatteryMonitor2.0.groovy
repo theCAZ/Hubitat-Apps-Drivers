@@ -16,8 +16,9 @@ definition(
 // ===================== OAUTH MAPPINGS ======================
 // ============================================================
 mappings {
-    path("/dashboard") { action: [GET: "serveDashboardPage"] }
+    path("/dashboard") { action: [GET: "serveDashboardPage"]  }
     path("/refresh")   { action: [GET: "forceRefreshEndpoint"] }
+    path("/go")        { action: [GET: "goEndpoint"]           }
 }
 
 // ============================================================
@@ -192,7 +193,10 @@ def mainPage() {
                           "<b>Cloud URL (use anywhere):</b><br>" +
                           "<a href='${cloudUrl}/dashboard?access_token=${state.accessToken}' target='_blank' style='color:#0c5460; word-wrap:break-word;'>${cloudUrl}/dashboard?access_token=${state.accessToken}</a><br><br>" +
                           "<b>Local URL (use at home):</b><br>" +
-                          "<a href='${localUrl}/dashboard?access_token=${state.accessToken}' target='_blank' style='color:#0c5460; word-wrap:break-word;'>${localUrl}/dashboard?access_token=${state.accessToken}</a>" +
+                          "<a href='${localUrl}/dashboard?access_token=${state.accessToken}' target='_blank' style='color:#0c5460; word-wrap:break-word;'>${localUrl}/dashboard?access_token=${state.accessToken}</a><br><br>" +
+                          "<b>Dashboard Tile URL (opens portal in new tab):</b><br>" +
+                          "<span style='word-wrap:break-word;'>${cloudUrl}/go?access_token=${state.accessToken}</span><br>" +
+                          "<span style='font-size:11px;'>Use this URL in a Hubitat dashboard Link tile — portal opens in a new tab, dashboard stays open in the background.</span>" +
                           "</div>"
             } else {
                 def hubIp = location?.hub?.localIP ?: ""
@@ -1057,6 +1061,28 @@ def forceRefreshEndpoint() {
 }
 
 // ============================================================
+// ===================== PORTAL ENDPOINT: GO (NEW TAB) ========
+// ============================================================
+// Used for Hubitat dashboard Link tiles — opens the portal in
+// a new tab so the dashboard stays open in the background.
+// Paste the /go URL into a Link tile instead of /dashboard.
+// ============================================================
+def goEndpoint() {
+    try {
+        def dashUrl = "${getFullApiServerUrl()}/dashboard?access_token=${state.accessToken}"
+        def html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>" +
+                   "<script>window.open('${dashUrl}','_blank');history.back();</script>" +
+                   "</head><body style='background:#0d0d0d;color:#fff;font-family:sans-serif;text-align:center;padding-top:80px;'>" +
+                   "<p style='color:#666;font-size:14px;'>Opening Battery Portal...</p>" +
+                   "</body></html>"
+        return render(contentType: "text/html", data: html, status: 200)
+    } catch (e) {
+        log.error "Battery Monitor go endpoint error: ${e}"
+        return render(contentType: "text/html", data: "Error: ${e.message}", status: 500)
+    }
+}
+
+// ============================================================
 // ===================== PORTAL ENDPOINT: DASHBOARD ==========
 // ============================================================
 def serveDashboardPage() {
@@ -1895,7 +1921,7 @@ def infoPage(Map params = [:]) {
                       "Summary cards at the top show at-a-glance counts for low battery, stale, high drain, and dead devices.<br><br>" +
                       "<b>Force Scan button:</b> Triggers an immediate battery scan from the portal — no need to open the Hubitat app.<br><br>" +
                       "<b>Auto-refresh:</b> The portal refreshes automatically every 2 minutes. Zero hub load between refreshes.<br><br>" +
-                      "<b>Adding to a Hubitat Dashboard:</b> Open your dashboard, add a new tile, select <b>Link</b> as the tile type, paste in your Cloud or Local URL from the main page, and set a label like 🔋 Battery Portal. Tapping the tile opens the portal in a new tab — your dashboard stays open in the background.</div>"
+                      "<b>Adding to a Hubitat Dashboard:</b> Use the <b>Dashboard Tile URL</b> shown on the main page (the /go URL) — not the Cloud or Local URL. Add a Link tile to your dashboard, paste in that URL, and set a label like 🔋 Battery Portal. Tapping the tile opens the portal in a new tab so your dashboard stays open in the background. Using the standard dashboard or Cloud URL instead will open in the same tab, requiring the back button to return.</div>"
         }
 
 
