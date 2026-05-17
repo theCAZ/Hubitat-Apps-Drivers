@@ -1066,15 +1066,20 @@ def forceRefreshEndpoint() {
 // Used for Hubitat dashboard Link tiles — opens the portal in
 // a new tab so the dashboard stays open in the background.
 // Paste the /go URL into a Link tile instead of /dashboard.
+// Uses a tap target instead of window.open() to bypass browser
+// popup blockers which block auto-triggered new tab opens.
 // ============================================================
 def goEndpoint() {
     try {
         def dashUrl = "${getFullApiServerUrl()}/dashboard?access_token=${state.accessToken}"
-        def html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>" +
-                   "<script>window.open('${dashUrl}','_blank');history.back();</script>" +
-                   "</head><body style='background:#0d0d0d;color:#fff;font-family:sans-serif;text-align:center;padding-top:80px;'>" +
-                   "<p style='color:#666;font-size:14px;'>Opening Battery Portal...</p>" +
-                   "</body></html>"
+        def html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>" +
+                   "<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0d0d0d;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;}" +
+                   "a{display:block;background:#1f618d;color:#fff;padding:18px 32px;border-radius:10px;text-decoration:none;font-size:18px;font-weight:600;text-align:center;}" +
+                   "a:hover{background:#1a5276}.wrap{text-align:center}.sub{color:#666;font-size:13px;margin-top:14px;}</style>" +
+                   "</head><body><div class='wrap'>" +
+                   "<a href='${dashUrl}' target='_blank'>🔋 Open Battery Portal</a>" +
+                   "<p class='sub'>Opens in a new tab — close it to return to your dashboard.</p>" +
+                   "</div></body></html>"
         return render(contentType: "text/html", data: html, status: 200)
     } catch (e) {
         log.error "Battery Monitor go endpoint error: ${e}"
@@ -2006,5 +2011,6 @@ def infoPage(Map params = [:]) {
         }
     }
 }
+
 
 
