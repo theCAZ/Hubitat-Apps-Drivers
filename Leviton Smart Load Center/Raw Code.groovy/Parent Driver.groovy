@@ -1104,26 +1104,15 @@ def wsPing() {
     def lastSeen = state.wsLastSeen ?: 0
     def age = (now() - lastSeen) / 1000
 
-    if (!state.wsConnected) {
-        // 🔥 if we THINK disconnected but still receiving messages, recover
-        if (age < 20) {
-            logDebug "[LDATA] WS watchdog: false disconnected state — restoring"
-            state.wsConnected = true
-        } else {
-            logDebug "[LDATA] WS ping watchdog: not connected, skipping"
-            return
-        }
+    // Optional: only correct obvious false state (no reconnect logic)
+    if (!state.wsConnected && age < 20) {
+        state.wsConnected = true
+        logDebug "[LDATA] WS watchdog: recovered connected state"
     }
-    if (age > 90) {
-        log.warn "[LDATA] WS watchdog: no server message in ${age.toInteger()}s — reconnecting"
-        state.wsConnected = false
-        closeWebSocket()
-        runIn(2, "connectWebSocket")
-    } else {
-        logDebug "[LDATA] WS watchdog OK: last message ${age.toInteger()}s ago"
-    }
-}
 
+    // Silent telemetry only
+    logDebug "[LDATA] WS watchdog: last message ${age.toInteger()}s ago"
+}
 // Auto-disable debug logging after 30 minutes
 def disableDebugLogging() {
     log.info "[LDATA] Auto-disabling debug logging"
