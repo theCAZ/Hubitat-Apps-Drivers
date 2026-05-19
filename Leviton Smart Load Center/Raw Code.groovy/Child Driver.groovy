@@ -24,6 +24,9 @@
  *   - Energy counters (kWh)
  *
  * Do NOT create this driver manually — it is managed by the parent.
+ *
+ * Changelog:
+ *   - No changes in this release (patches are in Parent driver only)
  */
 
 metadata {
@@ -31,7 +34,8 @@ metadata {
         name       : "Leviton Smart Load Center Child",
         namespace  : "jdthomas24",
         author     : "Community Port from rwoldberg/ldata-ha",
-        description: "Child device for Leviton Smart Panel breaker or CT sensor"
+        description: "Child device for Leviton Smart Panel breaker or CT sensor",
+        version    : "1.1.0"
     ) {
         // Core capabilities
         capability "Switch"           // on/off = breaker reset/trip
