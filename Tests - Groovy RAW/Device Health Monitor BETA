@@ -9,7 +9,7 @@
  *   - NEW: SPA architecture — portal shell loads instantly, data fetched async via /data JSON endpoint
  *         Eliminates 504 cloud timeouts on large device lists
  *   - NEW: Batch scanning — devices processed in auto-sized batches to protect hub performance
- *         on large installs. Configurable chunk size (default 40 devices per chunk)
+nk)
  *   - NEW: Low activity cap — devices with sparse check-in history that cannot be verified
  *         are capped at Poor instead of Offline — avoids false alarms on infrequently used devices
  *   - NEW: Location assignment per device — assign rooms/locations, bulk apply, used in portal
@@ -105,6 +105,15 @@ def initialize() {
     if (state.isScanning         == null) state.isScanning         = false
     if (state.deviceCapabilities  == null) state.deviceCapabilities  = [:]
     if (state.deepScanResult      == null) state.deepScanResult      = [:]
+
+    // One-time migration: wipe any corrupt deviceCapabilities data written before
+    // the atomic write fix (v1.5.0 early builds used direct bracket assignment
+    // which corrupted state on Hubitat, setting false pingWorks on all devices)
+    if (!state.capabilitiesResetDone) {
+        state.deviceCapabilities  = [:]
+        state.capabilitiesResetDone = true
+        if (debugEnabled()) log.debug "Device Health Monitor: reset deviceCapabilities — will rebuild on next scan"
+    }
     if (state.deviceLocations == null) state.deviceLocations = [:]
 
     // Migrate any existing loc_ settings into state.deviceLocations
@@ -306,6 +315,44 @@ def findHueBridge() {
     }
 }
 
+// Konnected child devices are identified by their DNI pattern: "parentId-key"
+// The parent Konnected Alarm Panel has capability Refresh and must be refreshed instead
+def findKonnectedPanel(device) {
+    def monitoredPanels = getAllMonitoredDevices().findAll { d ->
+        (d.typeName ?: "").toLowerCase().contains("konnected alarm panel")
+    }
+    if (!monitoredPanels) return null
+
+    // Method 1: parentDeviceId (most reliable when available)
+    try {
+        def parentId = device.parentDeviceId
+        if (parentId) {
+            def panel = monitoredPanels.find { d -> d.id == parentId }
+            if (panel) return panel
+        }
+    } catch (e) {}
+
+    // Method 2: DNI prefix match — Konnected child DNIs are "parentDeviceId-key"
+    // where key is a long integer (ESPHome entity key)
+    def dni = (device.deviceNetworkId ?: "")
+    if (dni.contains("-")) {
+        def parts    = dni.split("-")
+        def parentId = parts[0]
+        // Verify the suffix looks like an ESPHome key (large integer)
+        def suffix   = parts.size() > 1 ? parts[1] : ""
+        if (suffix.isNumber() && suffix.toLong() > 1000) {
+            def panel = monitoredPanels.find { d -> d.id == parentId }
+            if (panel) return panel
+        }
+    }
+
+    return null
+}
+
+def isKonnectedDevice(device) {
+    return findKonnectedPanel(device) != null
+}
+
 def isModeOK() {
     if (!settings?.enableModeRestriction) return true
     if (!settings?.restrictedModes) return true
@@ -341,11 +388,12 @@ def getDeviceDescription(device) {
 // ===================== PING STATUS HELPER ==================
 // ============================================================
 def getPingStatus(deviceId) {
-    def cap = state.deviceCapabilities?.get(deviceId as String)
+    def capMap = state.deviceCapabilities ?: [:]
+    def cap    = capMap[deviceId as String]
     if (!cap) return "unknown"
-    if (cap.pingWorks == true)                    return "verified"    // confirmed responds to ping
-    if (cap.pingWorks == false)                   return "unverifiable" // confirmed does not respond
-    if (cap.declared  == true)                    return "declared"    // has capability, not yet tested
+    if (cap.pingWorks == true)  return "verified"
+    if (cap.pingWorks == false) return "unverifiable"
+    if (cap.declared  == true)  return "declared"
     return "unknown"
 }
 
@@ -1422,39 +1470,50 @@ def processDeepScanGroup(data) {
         def device = allDevs.find { it.id == devId }
         if (!device) return
 
-        def cap = state.deviceCapabilities[devId as String] ?: [:]
+        def capMapD  = state.deviceCapabilities ?: [:]
+        def capKeyD  = devId as String
+        def capDataD = capMapD[capKeyD] ?: [:]
         def protocol  = getProtocol(device)
         def isVirtual = protocol in ["Virtual", "Hub Variable"]
 
         if (isVirtual) {
-            cap.pingWorks  = false
-            cap.pingFailed = (cap.pingFailed ?: 0) + 1
+            capDataD.pingWorks  = false
+            capDataD.pingFailed = (capDataD.pingFailed ?: 0) + 1
         } else if (isHueDevice(device)) {
             def bridge = findHueBridge()
             if (bridge) {
-                try { bridge.refresh(); cap.pingAttempted = true; cap.lastPingAttempt = now() }
-                catch (e) { cap.pingWorks = false; cap.pingFailed = (cap.pingFailed ?: 0) + 1 }
+                try { bridge.refresh(); capDataD.pingAttempted = true; capDataD.lastPingAttempt = now() }
+                catch (e) { capDataD.pingWorks = false; capDataD.pingFailed = (capDataD.pingFailed ?: 0) + 1 }
             } else {
-                cap.pingWorks = false
+                capDataD.pingWorks = false
             }
         } else {
-            def hasRefresh = false
-            def hasPing    = false
-            try { hasRefresh = device.hasCapability("Refresh") } catch (e) {}
-            try { hasPing    = device.hasCapability("Ping")    } catch (e) {}
+            def hasRefresh       = false
+            def hasPing          = false
+            def hasCustomRefresh = false
+            try { hasRefresh       = device.hasCapability("Refresh") } catch (e) {}
+            try { hasPing          = device.hasCapability("Ping")    } catch (e) {}
+            try { hasCustomRefresh = device.hasCommand("forceRefresh") || device.hasCommand("refresh") } catch (e) {}
 
             if (hasRefresh) {
-                try { device.refresh(); cap.pingAttempted = true; cap.lastPingAttempt = now() }
-                catch (e) { cap.pingWorks = false; cap.pingFailed = (cap.pingFailed ?: 0) + 1 }
+                try { device.refresh(); capDataD.pingAttempted = true; capDataD.lastPingAttempt = now() }
+                catch (e) { capDataD.pingWorks = false; capDataD.pingFailed = (capDataD.pingFailed ?: 0) + 1 }
             } else if (hasPing) {
-                try { device.ping(); cap.pingAttempted = true; cap.lastPingAttempt = now() }
-                catch (e) { cap.pingWorks = false; cap.pingFailed = (cap.pingFailed ?: 0) + 1 }
+                try { device.ping(); capDataD.pingAttempted = true; capDataD.lastPingAttempt = now() }
+                catch (e) { capDataD.pingWorks = false; capDataD.pingFailed = (capDataD.pingFailed ?: 0) + 1 }
+            } else if (hasCustomRefresh) {
+                try {
+                    if (device.hasCommand("forceRefresh")) device.forceRefresh()
+                    else device.refresh()
+                    capDataD.pingAttempted = true; capDataD.lastPingAttempt = now()
+                } catch (e) { capDataD.pingWorks = false; capDataD.pingFailed = (capDataD.pingFailed ?: 0) + 1 }
             } else {
-                cap.pingWorks  = false
-                cap.pingFailed = (cap.pingFailed ?: 0) + 1
+                capDataD.pingWorks  = false
+                capDataD.pingFailed = (capDataD.pingFailed ?: 0) + 1
             }
         }
-        state.deviceCapabilities[devId as String] = cap
+        capMapD[capKeyD]         = capDataD
+        state.deviceCapabilities = capMapD
     }
 }
 
@@ -1503,7 +1562,7 @@ def scanAllDevices() {
         return
     }
 
-    if (debugEnabled()) log.debug "Starting batch scan for ${devList.size()} device(s)"
+    log.info "Device Health Monitor: scan started — ${devList.size()} device(s) queued"
     state.isScanning  = true
     state.scanStartTime = nowMs
     state.tempResults  = []
@@ -1550,8 +1609,11 @@ def processScanChunk() {
     // Auto-scale batch size — smaller batches for larger installs
     def totalDevices = getAllMonitoredDevices().size()
     def chunkSize    = totalDevices > 200 ? 25 : 40
-    def chunk     = queue.take(chunkSize)
-    state.scanQueue = queue.drop(chunkSize)
+    def chunk        = queue.take(chunkSize)
+    def remaining    = queue.drop(chunkSize)
+    state.scanQueue  = remaining
+    def batchNum     = Math.ceil(totalDevices / chunkSize).toInteger() - Math.ceil(remaining.size() / chunkSize).toInteger()
+    log.info "Device Health Monitor: scanning batch ${batchNum} — ${chunk.size()} devices (${remaining.size()} remaining)"
 
     def allDevs         = getAllMonitoredDevices()
     def intervalStr     = settings?.scanInterval ?: "3"
@@ -1573,18 +1635,47 @@ def processScanChunk() {
             def lastSeen     = lastActivity ? safeTime(lastActivity) : now()
 
             // Declared capability detection — cheap property reads, no hub load
-            def cap = state.deviceCapabilities[id as String] ?: [:]
-            def declaredRefresh = false
-            def declaredPing    = false
-            try { declaredRefresh = device.hasCapability("Refresh") } catch (e) {}
-            try { declaredPing    = device.hasCapability("Ping")    } catch (e) {}
-            cap.declaredRefresh = declaredRefresh
-            cap.declaredPing    = declaredPing
-            cap.declared        = declaredRefresh || declaredPing
-            // pingWorks and pingFailed preserved from previous verification attempts
-            if (!cap.containsKey("pingWorks"))  cap.pingWorks  = null
-            if (!cap.containsKey("pingFailed")) cap.pingFailed = 0
-            state.deviceCapabilities[id as String] = cap
+            // Hue and Konnected devices are verified via parent device — mark as declared
+            def capMap  = state.deviceCapabilities ?: [:]
+            def capKey  = id as String
+            def capData = capMap[capKey] ?: [:]
+
+            if (isHueDevice(device)) {
+                // Hue devices verified via Hue Bridge
+                if (debugEnabled()) log.debug "DHM capability scan: ${device.displayName} detected as Hue — marking declared"
+                capData.declared        = true
+                capData.declaredRefresh = true
+                // Clear any incorrectly set unverifiable status — these use parent verification
+                if (capData.pingWorks == false && (capData.pingFailed ?: 0) == 0) capData.pingWorks = null
+            } else if (isKonnectedDevice(device)) {
+                // Konnected child devices verified via parent panel
+                if (debugEnabled()) log.debug "DHM capability scan: ${device.displayName} detected as Konnected child (DNI: ${device.deviceNetworkId}) — marking declared"
+                capData.declared        = true
+                capData.declaredRefresh = true
+                // Clear any incorrectly set unverifiable status — these use parent verification
+                if (capData.pingWorks == false && (capData.pingFailed ?: 0) == 0) capData.pingWorks = null
+            } else {
+                def declaredRefresh  = false
+                def declaredPing     = false
+                def hasCustomRefresh = false
+                def capCheckOk       = false
+                try { declaredRefresh  = device.hasCapability("Refresh");    capCheckOk = true } catch (e) {}
+                try { declaredPing     = device.hasCapability("Ping");       capCheckOk = true } catch (e) {}
+                try { hasCustomRefresh = device.hasCommand("forceRefresh") ||
+                                         device.hasCommand("refresh")       ; capCheckOk = true } catch (e) {}
+                capData.declaredRefresh  = declaredRefresh || hasCustomRefresh
+                capData.declaredPing     = declaredPing
+                capData.declared         = declaredRefresh || declaredPing || hasCustomRefresh
+                capData.customRefreshCmd = hasCustomRefresh && !declaredRefresh ? "forceRefresh" : null
+                // If scan ran successfully but no capability/command found → unverifiable
+                if (capCheckOk && !capData.declared && capData.pingWorks == null) {
+                    capData.pingWorks  = false
+                    capData.pingFailed = 0
+                }
+            }
+            if (!capData.containsKey("pingFailed")) capData.pingFailed = 0
+            capMap[capKey] = capData
+            state.deviceCapabilities = capMap
 
             if (!data) {
                 state.history[id] = [
@@ -1599,12 +1690,15 @@ def processScanChunk() {
                 def prevLastSeen = data.lastSeen ?: lastSeen
                 if (lastSeen > prevLastSeen) {
                     // If device recovered after a ping attempt → ping works!
-                    def capRec = state.deviceCapabilities[id as String] ?: [:]
-                    if (capRec.pingAttempted == true) {
-                        capRec.pingWorks    = true
-                        capRec.pingFailed   = 0
-                        capRec.pingAttempted = false
-                        state.deviceCapabilities[id as String] = capRec
+                    def capMapRec  = state.deviceCapabilities ?: [:]
+                    def capKeyRec  = id as String
+                    def capDataRec = capMapRec[capKeyRec] ?: [:]
+                    if (capDataRec.pingAttempted == true) {
+                        capDataRec.pingWorks     = true
+                        capDataRec.pingFailed    = 0
+                        capDataRec.pingAttempted = false
+                        capMapRec[capKeyRec]     = capDataRec
+                        state.deviceCapabilities = capMapRec
                         if (debugEnabled()) log.debug "${device.displayName}: ping confirmed working — device responded after verification attempt"
                     }
                     def elapsed = (lastSeen - prevLastSeen) / (1000 * 60)
@@ -1650,7 +1744,7 @@ def finalizeScan() {
     state.scanStartTime = null
     state.tempResults  = []
     state.scanQueue    = []
-    if (debugEnabled()) log.debug "Batch scan complete."
+    log.info "Device Health Monitor: scan complete — all devices processed"
 }
 
 // ============================================================
@@ -1711,36 +1805,54 @@ def updateHealth(device) {
         } else {
             verifyMethod = "hue_no_bridge"
         }
+    } else if (isKonnectedDevice(device)) {
+        def panel = findKonnectedPanel(device)
+        if (panel) {
+            try { panel.refresh(); verifyMethod = "konnected_panel" }
+            catch (e) { verifyMethod = "konnected_panel_failed" }
+        } else {
+            verifyMethod = "konnected_no_panel"
+        }
     } else {
         try { hasRefresh = device.hasCapability("Refresh") } catch (e) { }
         try { hasPing    = device.hasCapability("Ping")    } catch (e) { }
+        def hasCustomRefresh = false
+        try { hasCustomRefresh = device.hasCommand("forceRefresh") || device.hasCommand("refresh") } catch (e) {}
         if (hasRefresh) {
             try { device.refresh(); verifyMethod = "refresh" }
             catch (e) { verifyMethod = "failed" }
         } else if (hasPing) {
             try { device.ping(); verifyMethod = "ping" }
             catch (e) { verifyMethod = "failed" }
+        } else if (hasCustomRefresh) {
+            try {
+                if (device.hasCommand("forceRefresh")) { device.forceRefresh(); verifyMethod = "refresh" }
+                else { device.refresh(); verifyMethod = "refresh" }
+            } catch (e) { verifyMethod = "failed" }
         } else {
             verifyMethod = "none"
         }
     }
     state.verifying[id] = verifyMethod
+    if (verifyMethod in ["refresh", "ping"]) {
+        log.info "Device Health Monitor: ${currentHealth} — sent ${verifyMethod} to ${device.displayName}"
+    } else if (verifyMethod in ["none", "virtual", "hue_no_bridge", "failed"]) {
+        if (debugEnabled()) log.debug "Device Health Monitor: ${currentHealth} — cannot verify ${device.displayName} (${verifyMethod})"
+    }
 
     // Record declared capability outcome into deviceCapabilities
-    if (state.deviceCapabilities  == null) state.deviceCapabilities  = [:]
-    if (state.deepScanResult      == null) state.deepScanResult      = [:]
-    def cap = state.deviceCapabilities[id as String] ?: [:]
+    def capMapH  = state.deviceCapabilities ?: [:]
+    def capKeyH  = id as String
+    def capDataH = capMapH[capKeyH] ?: [:]
     if (verifyMethod in ["refresh", "ping", "hue_bridge"]) {
-        // Command sent — outcome determined on next scan when lastSeen updates
-        // Mark as "attempted" so we can track response
-        cap.lastPingAttempt = now()
-        cap.pingAttempted   = true
+        capDataH.lastPingAttempt = now()
+        capDataH.pingAttempted   = true
     } else if (verifyMethod in ["none", "virtual", "hue_no_bridge", "hue_bridge_failed", "failed"]) {
-        // Confirmed unverifiable — increment failure count
-        cap.pingWorks  = false
-        cap.pingFailed = (cap.pingFailed ?: 0) + 1
+        capDataH.pingWorks  = false
+        capDataH.pingFailed = (capDataH.pingFailed ?: 0) + 1
     }
-    state.deviceCapabilities[id as String] = cap
+    capMapH[capKeyH]         = capDataH
+    state.deviceCapabilities = capMapH
 
     // Low activity + cannot verify = cap at Poor, not Offline
     // A device with sparse check-in history that can't be pinged should not be
@@ -1782,9 +1894,12 @@ def getHealthDisplay(device) {
         switch (verifyMethod) {
             case "refresh":           return "${baseDisplay}${tagSuffix} <span style='color:#1a73e8;font-size:11px;'>🔄 Verifying... (refresh sent)</span>"
             case "ping":              return "${baseDisplay}${tagSuffix} <span style='color:#1a73e8;font-size:11px;'>🔄 Verifying... (ping sent)</span>"
-            case "hue_bridge":        return "${baseDisplay}${tagSuffix} <span style='color:#1a73e8;font-size:11px;'>🔄 Verifying... (Hue Bridge refresh sent)</span>"
-            case "hue_no_bridge":     return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Cannot verify — add Hue Bridge to monitored devices</span>"
-            case "hue_bridge_failed": return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Hue Bridge refresh failed</span>"
+            case "hue_bridge":            return "${baseDisplay}${tagSuffix} <span style='color:#1a73e8;font-size:11px;'>🔄 Verifying... (Hue Bridge refresh sent)</span>"
+            case "hue_no_bridge":         return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Cannot verify — add Hue Bridge to monitored devices</span>"
+            case "hue_bridge_failed":     return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Hue Bridge refresh failed</span>"
+            case "konnected_panel":       return "${baseDisplay}${tagSuffix} <span style='color:#1a73e8;font-size:11px;'>🔄 Verifying... (Konnected Panel refresh sent)</span>"
+            case "konnected_no_panel":    return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Cannot verify — add Konnected Alarm Panel to monitored devices</span>"
+            case "konnected_panel_failed":return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Konnected Panel refresh failed</span>"
             case "virtual":           return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Cannot verify — virtual device</span>"
             case "none":              return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Cannot verify — device does not support ping or refresh</span>"
             case "failed":            return "${baseDisplay}${tagSuffix} <span style='color:#94a3b8;font-size:11px;'>⚠ Verification attempted but command failed</span>"
@@ -1816,7 +1931,18 @@ def getHealthEmoji(h) {
 // ============================================================
 // ===================== SAFE HELPERS ========================
 // ============================================================
-def safeTime(ts) { return (ts instanceof Number) ? ts : ts?.time }
+def safeTime(ts) {
+    if (ts == null) return null
+    if (ts instanceof Number) return ts
+    try {
+        def t = ts?.time
+        if (t instanceof Number) return t
+        if (t?.toString()?.isNumber()) return t.toString().toLong()
+        return null
+    } catch (e) {
+        return null
+    }
+}
 
 def formatTimeAgo(ts) {
     if (!ts) return "N/A"
@@ -2112,8 +2238,11 @@ function healthLabel(dev) {
         let vSuffix = '';
         if (vm === 'refresh' || vm === 'ping') vSuffix = ' <span style="color:#1a73e8;font-size:10px;">🔄 Verifying...</span>';
         else if (vm === 'none' || vm === 'virtual') vSuffix = ' <span style="color:#94a3b8;font-size:10px;">⚠ Cannot verify</span>';
-        else if (vm === 'hue_bridge')          vSuffix = ' <span style="color:#1a73e8;font-size:10px;">🔄 Hue Bridge refresh sent</span>';
-        else if (vm === 'hue_no_bridge')       vSuffix = ' <span style="color:#94a3b8;font-size:10px;">⚠ Add Hue Bridge</span>';
+        else if (vm === 'hue_bridge')              vSuffix = ' <span style="color:#1a73e8;font-size:10px;">🔄 Hue Bridge refresh sent</span>';
+        else if (vm === 'hue_no_bridge')           vSuffix = ' <span style="color:#94a3b8;font-size:10px;">⚠ Add Hue Bridge</span>';
+        else if (vm === 'konnected_panel')         vSuffix = ' <span style="color:#1a73e8;font-size:10px;">🔄 Konnected Panel refresh sent</span>';
+        else if (vm === 'konnected_no_panel')      vSuffix = ' <span style="color:#94a3b8;font-size:10px;">⚠ Add Konnected Panel</span>';
+        else if (vm === 'konnected_panel_failed')  vSuffix = ' <span style="color:#94a3b8;font-size:10px;">⚠ Konnected Panel refresh failed</span>';
         return icon + ' ' + h + suffix + vSuffix;
     }
     return icon + ' ' + h + suffix;
@@ -2652,6 +2781,19 @@ def problemDevicesPage() {
                       "<b>❓ Unknown (${unknownCount})</b> — not yet scanned<br><br>" +
                       "<i style='color:#94a3b8;font-size:11px;'>Verification status is learned over time as devices go Poor or Offline and the app attempts contact. " +
                       "Run Force Scan to update.</i></div>"
+
+            if (unknownCount > 0) {
+                def unknownDevs = allDevs.findAll { getPingStatus(it.id) == "unknown" }
+                                         .sort { a, b -> a.displayName <=> b.displayName }
+                def unknownList = unknownDevs.collect { device ->
+                    def protocol = getProtocol(device)
+                    "<span style='color:${getProtocolColor(protocol)};font-weight:bold;font-size:11px;'>${protocol}</span>&nbsp;${device.displayName}"
+                }.join("<br>")
+                paragraph "<div style='background-color:#f8f8f8; border:1px solid #ddd; border-radius:6px; padding:10px; margin-top:6px;'>" +
+                          "<b style='color:#94a3b8;'>❓ Not yet scanned (${unknownCount}):</b><br>" +
+                          "<span style='font-size:12px; color:#4b5563; line-height:1.8;'>${unknownList}</span><br><br>" +
+                          "<i style='color:#94a3b8;font-size:11px;'>These will be classified after the next scan. Run Force Scan to update immediately.</i></div>"
+            }
         }
     }
 }
@@ -3026,10 +3168,9 @@ def infoPage(Map params = [:]) {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
                       "Starting in v1.5.0 the app scans devices in configurable batches rather than all at once. " +
                       "This prevents a large device query from blocking the hub's event queue on installs with 100+ devices.<br><br>" +
-                      "<b>How it works:</b> Devices are queued and processed in chunks (default 40 per chunk) with a 2-second pause between batches. " +
-                      "Health scores update as each chunk completes — you don't have to wait for the entire scan to finish.<br><br>" +
-                      "<b>Chunk size:</b> Configurable in Monitoring Settings. 40 is recommended for most installs. " +
-                      "Larger chunks finish faster but put more momentary load on the hub. Smaller chunks are gentler but take longer overall.<br><br>" +
+                      "<b>How it works:</b> Devices are queued and processed in batches (default 40 per chunk) with a 2-second pause between batches. " +
+                      "Health scores update progressively as each batch completes — you don't have to wait for the entire scan to finish.<br><br>" +
+                      "<b>Batch size:</b> Automatically set to 40 for most installs, 25 for installs over 200 devices. No configuration needed.<br><br>" +
                       "<b>Stuck scan protection:</b> If a scan hasn't completed within 2 minutes it is automatically reset " +
                       "so a single bad scan can't block future scans indefinitely.</div>"
         }
@@ -3075,7 +3216,9 @@ def infoPage(Map params = [:]) {
                       "If the device responds its health recovers on the next scan. The verification status is shown inline in the Health column.<br><br>" +
                       "<b>Low activity devices</b> that cannot be verified (no Refresh or Ping capability) are capped at Poor instead of Offline — the app cannot confirm they are truly unreachable.<br><br>" +
                       "<b>Hue devices:</b> Add your Hue Bridge (or CoCoHue Bridge) to the monitored devices list. " +
-                      "The app refreshes the Bridge when any Hue device goes Poor or Offline — one refresh covers all connected Hue devices simultaneously.</div>"
+                      "The app refreshes the Bridge when any Hue device goes Poor or Offline — one refresh covers all connected Hue devices simultaneously.<br><br>" +
+                      "<b>Konnected devices:</b> Add your <b>Konnected Alarm Panel</b> to monitored devices. " +
+                      "Child sensors (door, motion, water) are verified by refreshing the panel — one refresh covers all connected sensors simultaneously.</div>"
         }
 
         section("<b>💡 Tips for Best Results</b>") {
