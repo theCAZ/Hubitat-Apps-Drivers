@@ -25,9 +25,15 @@
  *   5. Save Preferences — the driver will authenticate and discover all panels/breakers
  *
  * Changelog:
+ *   v1.1.0
  *   - PATCH: Fixed Integer.round() error in recalcTotalPower and parsePanels
  *             (Groovy Integer has no round() method; cast to Float explicitly)
  *   - PATCH: Added WS reconnect cooldown guard to prevent reconnect loop flood
+ *   v1.1.1
+ *   - PATCH: Added roundF() utility helper — converts any numeric type (Integer,
+ *             BigDecimal, Float) to Float before rounding, fixing BigDecimal.round(int)
+ *             errors thrown by WS notification handlers (updateBreakerChild,
+ *             updateCtChild, handleWsPanelUpdate, parsePanels sendEvents)
  */
 
 import groovy.json.JsonSlurper
@@ -40,7 +46,7 @@ metadata {
         namespace: "jdthomas24",
         author: "Community Port from rwoldberg/ldata-ha",
         description: "Leviton Smart Panel (LDATA/LWHEM) integration with breaker monitoring and control",
-        version: "1.1.0"
+        version: "1.1.1"
     ) {
         capability "Initialize"
         capability "Refresh"
@@ -493,8 +499,8 @@ private void parsePanels(List panelsJson) {
         newPanels[panelId] = panelData
 
         // Update panel-level attributes on parent device
-        sendEvent(name: "panelVoltage",   value: panelData.voltage.round(1))
-        sendEvent(name: "panelFrequency", value: panelData.frequency.round(2))
+        sendEvent(name: "panelVoltage",   value: roundF(panelData.voltage, 1))
+        sendEvent(name: "panelFrequency", value: roundF(panelData.frequency, 2))
         sendEvent(name: "panelFirmware",  value: fwStr)
         sendEvent(name: "panelConnected", value: panelData.connected ? "online" : "offline")
 
@@ -654,10 +660,10 @@ private void updateBreakerChild(def child, Map bd) {
     def isOn = (bd.state == "ManualON" && bd.remoteState == "RemoteON")
     child.parse([
         [name: "switch",           value: isOn ? "on" : "off"],
-        [name: "power",            value: bd.power.round(1)],
-        [name: "current",          value: bd.current.round(3)],
-        [name: "voltage",          value: bd.voltage.round(1)],
-        [name: "frequency",        value: bd.frequency.round(2)],
+        [name: "power",            value: roundF(bd.power, 1)],
+        [name: "current",          value: roundF(bd.current, 3)],
+        [name: "voltage",          value: roundF(bd.voltage, 1)],
+        [name: "frequency",        value: roundF(bd.frequency, 2)],
         [name: "ampRating",        value: bd.rating],
         [name: "position",         value: bd.position],
         [name: "leg",              value: bd.leg],
@@ -666,8 +672,8 @@ private void updateBreakerChild(def child, Map bd) {
         [name: "canRemoteOn",      value: bd.canRemoteOn],
         [name: "breakerState",     value: bd.state],
         [name: "remoteState",      value: bd.remoteState],
-        [name: "energyConsumption",value: bd.consumption.round(3)],
-        [name: "energyImport",     value: bd.importEnergy.round(3)],
+        [name: "energyConsumption",value: roundF(bd.consumption, 3)],
+        [name: "energyImport",     value: roundF(bd.importEnergy, 3)],
         [name: "deviceType",       value: "breaker"],
         [name: "breakerId",        value: bd.id]
     ])
@@ -675,10 +681,10 @@ private void updateBreakerChild(def child, Map bd) {
 
 private void updateCtChild(def child, Map ctd) {
     child.parse([
-        [name: "power",            value: ctd.power.round(1)],
-        [name: "current",          value: ctd.current.round(3)],
-        [name: "energyConsumption",value: ctd.consumption.round(3)],
-        [name: "energyImport",     value: ctd.importEnergy.round(3)],
+        [name: "power",            value: roundF(ctd.power, 1)],
+        [name: "current",          value: roundF(ctd.current, 3)],
+        [name: "energyConsumption",value: roundF(ctd.consumption, 3)],
+        [name: "energyImport",     value: roundF(ctd.importEnergy, 3)],
         [name: "channel",          value: ctd.channel],
         [name: "deviceType",       value: "ct"],
         [name: "ctId",             value: ctd.id]
@@ -1201,14 +1207,14 @@ private void handleWsPanelUpdate(Map data) {
     if (v2Raw != null) panel.voltage2 = floatOrDefault(v2Raw, panel.voltage2 ?: 0)
     if (v1Raw != null || v2Raw != null) {
         panel.voltage = ((panel.voltage1 ?: 0) + (panel.voltage2 ?: 0)) / 2.0
-        sendEvent(name: "panelVoltage", value: panel.voltage.round(1))
+        sendEvent(name: "panelVoltage", value: roundF(panel.voltage, 1))
     }
 
     if (data.frequencyA != null) panel.frequency1 = floatOrDefault(data.frequencyA, panel.frequency1 ?: 0)
     if (data.frequencyB != null) panel.frequency2 = floatOrDefault(data.frequencyB, panel.frequency2 ?: 0)
     if (data.frequencyA != null || data.frequencyB != null) {
         panel.frequency = ((panel.frequency1 ?: 0) + (panel.frequency2 ?: 0)) / 2.0
-        sendEvent(name: "panelFrequency", value: panel.frequency.round(2))
+        sendEvent(name: "panelFrequency", value: roundF(panel.frequency, 2))
     }
 
     state.panels[panelId] = panel
@@ -1260,6 +1266,16 @@ private float floatOrDefault(def value, float defaultVal = 0.0) {
         if (value == null) return defaultVal
         return value.toFloat()
     } catch (ignored) { return defaultVal }
+}
+
+// PATCH: safe rounding — converts any numeric type (Integer, BigDecimal, Float)
+//        to Float before rounding, avoiding BigDecimal.round(int) / Integer.round()
+//        signature errors that Groovy/Hubitat throws at runtime.
+private float roundF(def value, int decimals = 1) {
+    try {
+        if (value == null) return 0.0f
+        return value.toFloat().round(decimals)
+    } catch (ignored) { return 0.0f }
 }
 
 private void logDebug(String msg) {
