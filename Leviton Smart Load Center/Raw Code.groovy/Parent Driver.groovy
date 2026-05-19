@@ -683,8 +683,6 @@ private void parsePanels(List panelsJson) {
         }
 
         newPanels[panelId].totalPower = totalPower
-        // PATCH: totalPower is now Float, .round(1) is safe
-        sendEvent(name: "totalPower", value: totalPower.round(1))
     }
 
     state.panels   = newPanels
@@ -1039,7 +1037,7 @@ state.breakers?.each { bId, bd ->
     }
 }
     if (state.panels[panelId]) state.panels[panelId].totalPower = total
-    sendEvent(name: "totalPower", value: total.round(1))
+    sendEvent(name: "totalPower", value: roundF(total, 1))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1306,12 +1304,21 @@ private void handleWsBreakerUpdate(Map data, def modelId) {
     applyBreakerUpdate(bId, existing, data, "WS")
     state.breakers[bId] = existing
 
+    // 🔥 FIX START (NEW)
+    def sig = "${existing.power}|${existing.current}|${existing.state}|${existing.remoteState}"
+    state.wsSig = state.wsSig ?: [:]
+
+    if (state.wsSig[bId] == sig) {
+        return   // STOP duplicate processing
+    }
+    state.wsSig[bId] = sig
+    // 🔥 FIX END
+
     recalcTotalPower(existing.panel_id)
 
     def child = getChildDevice("LDATA-BREAKER-${bId}")
     if (child) updateBreakerChild(child, existing)
 }
-
 private void handleWsCtUpdate(Map data, def modelId) {
     def ctId = (data.id ?: modelId)?.toString()
     if (!ctId || !state.cts?.containsKey(ctId)) return
@@ -1319,6 +1326,16 @@ private void handleWsCtUpdate(Map data, def modelId) {
     def existing = state.cts[ctId] as Map
     applyCtUpdate(existing, data)
     state.cts[ctId] = existing
+
+    // 🔥 FIX START (NEW)
+    def sig = "${existing.power}|${existing.current}|${existing.consumption}|${existing.importEnergy}"
+    state.wsSig = state.wsSig ?: [:]
+
+    if (state.wsSig[ctId] == sig) {
+        return   // STOP duplicate processing
+    }
+    state.wsSig[ctId] = sig
+    // 🔥 FIX END
 
     def panelId = existing.panel_id
     def child = getChildDevice("LDATA-CT-${panelId}-${ctId}")
