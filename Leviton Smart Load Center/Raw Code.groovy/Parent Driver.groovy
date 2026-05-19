@@ -45,6 +45,42 @@
  *             the WS to disconnect/reconnect every ~30-60 seconds
  *   - ADDED: "Disable Bandwidth Keepalive" preference — toggle off if keepalive
  *             PUTs are still causing WS instability
+ *   v1.1.4
+ *   - FIX:   Added wsPing() scheduled every 30s — Leviton server has a ~60s idle
+ *             timeout; without a heartbeat it closes the socket every minute
+ *   - ADDED: Debug logging auto-disables after 30 minutes to keep logs clean
+ *   v1.1.5
+ *   - FIX:   wsPing() now uses interfaces.webSocket.sendPing() (native WS ping
+ *             frame) instead of sendMessage("{}") — server ignores text frames
+ *   - FIX:   Replaced runEvery30Seconds("wsPing") with schedule() cron expression
+ *             — runEvery30Seconds() threw MissingMethodException on line 205
+ *   - FIX:   Routine WS disconnects downgraded from warn to logDebug — only
+ *             genuine failures (failure: closed) log at warn level
+ *   v1.1.6
+ *   - FIX:   Leviton server uses Socket.IO protocol, not raw WebSocket.
+ *             sendPing() (native WS ping) caused immediate server close.
+ *             wsPing() now sends "2" (Socket.IO ping text packet) instead.
+ *   - FIX:   parse() now handles Socket.IO protocol packets before JSON parsing:
+ *             "2" (ping) → responds with "3" (pong); "3" (pong) acknowledged;
+ *             "40" (connect); "42[...]" (event) envelope stripped before parse.
+ *   v1.1.7
+ *   - FIX:   wsPing() guard replaced device.currentValue("wsStatus") with
+ *             state.wsConnected — attribute reads can lag and were blocking all
+ *             pings, meaning the 30s server timeout was never being reset
+ *   - FIX:   Immediate "2" ping sent after subscriptions so server idle timer
+ *             resets right away rather than waiting up to 25s for cron
+ *   - FIX:   state.wsConnected cleared in closeWebSocket(), updated(), and
+ *             webSocketStatus disconnect handler for consistent tracking
+ *   v1.1.8
+ *   - FIX:   Raw WS logging revealed server uses plain JSON, NOT Socket.IO.
+ *             Sending "2" (Socket.IO ping) caused immediate server close.
+ *             Removed all Socket.IO handling from parse() and wsPing().
+ *   - FIX:   Server sends its own {"status":"not ready"} / {"status":"ready"}
+ *             heartbeat cycle — these now handled explicitly in parse().
+ *   - FIX:   wsPing() converted to a watchdog: if no server message received
+ *             in 90s it triggers a reconnect rather than sending any message.
+ *   - ADDED: state.wsLastSeen tracks timestamp of last received WS message
+ *             for watchdog health monitoring.
  */
 
 import groovy.json.JsonSlurper
@@ -57,7 +93,7 @@ metadata {
         namespace: "jdthomas24",
         author: "Community Port from rwoldberg/ldata-ha",
         description: "Leviton Smart Panel (LDATA/LWHEM) integration with breaker monitoring and control",
-        version: "1.1.3"
+        version: "1.1.8"
     ) {
         capability "Initialize"
         capability "Refresh"
@@ -154,6 +190,14 @@ def updated() {
     state.cts             = [:]
     // FIX: clear reconnect guard on full reinit
     state.wsReconnectPending = false
+    state.wsConnected        = false
+
+    // Auto-disable debug logging after 30 minutes to keep logs clean
+    if (settings.debugLogging) {
+        log.info "[LDATA] Debug logging enabled — will auto-disable in 30 minutes"
+        runIn(1800, "disableDebugLogging")
+    }
+
     pauseExecution(1000)
     initialize()
 }
@@ -189,6 +233,11 @@ def initialize() {
 
     // Start WebSocket
     connectWebSocket()
+
+    // Schedule WS ping every 25s using cron — prevents server-side ~30s idle timeout.
+    // runEvery30Seconds() conflicts with restPoll if that's also on 30s; cron avoids it.
+    // Uses sendPing() (native WS ping frame) not sendMessage() (text frame).
+    schedule("0/25 * * * * ?", "wsPing")
 
     // Schedule REST polling fallback (for energy counters + keepalive)
     def interval = (settings.pollInterval ?: "60").toInteger()
@@ -1020,6 +1069,7 @@ def connectWebSocket() {
 }
 
 def closeWebSocket() {
+    state.wsConnected = false
     try { interfaces.webSocket.close() } catch (ignored) {}
     sendEvent(name: "wsStatus", value: "Disconnected")
     sendEvent(name: "presence", value: "not present")
@@ -1040,6 +1090,35 @@ def wsReconnect() {
     connectWebSocket()
 }
 
+// WS ping — cron fires every 25s but we only act if the server has gone silent.
+// The Leviton server uses plain JSON over WebSocket (NOT Socket.IO despite the
+// socket.io URL). It manages its own heartbeat by sending {"status":"not ready"}
+// followed by {"status":"ready"} — we must NOT send "2" packets as that causes
+// the server to immediately close the connection.
+// This method is kept as a watchdog: if state.wsLastSeen is too old, reconnect.
+def wsPing() {
+    if (!state.wsConnected) {
+        logDebug "[LDATA] WS ping watchdog: not connected, skipping"
+        return
+    }
+    def lastSeen = state.wsLastSeen ?: 0
+    def age = (now() - lastSeen) / 1000
+    if (age > 90) {
+        log.warn "[LDATA] WS watchdog: no server message in ${age.toInteger()}s — reconnecting"
+        state.wsConnected = false
+        closeWebSocket()
+        runIn(2, "connectWebSocket")
+    } else {
+        logDebug "[LDATA] WS watchdog OK: last message ${age.toInteger()}s ago"
+    }
+}
+
+// Auto-disable debug logging after 30 minutes
+def disableDebugLogging() {
+    log.info "[LDATA] Auto-disabling debug logging"
+    device.updateSetting("debugLogging", [value: false, type: "bool"])
+}
+
 // Hubitat WebSocket callbacks
 def webSocketStatus(String status) {
     logDebug "[LDATA] WS status: ${status}"
@@ -1049,10 +1128,16 @@ def webSocketStatus(String status) {
         def authPayload = buildWsAuthPayload()
         interfaces.webSocket.sendMessage(JsonOutput.toJson(authPayload))
     } else if (status.startsWith("status: closing") || status.contains("failure")) {
+        state.wsConnected = false
         sendEvent(name: "wsStatus",  value: "Disconnected")
         sendEvent(name: "presence",  value: "not present")
-        log.warn "[LDATA] WebSocket disconnected: ${status}"
-        // PATCH: cooldown guard — only schedule one reconnect at a time
+        // Only log at warn level for genuine failures, not routine server-side closes
+        if (status.contains("failure")) {
+            log.warn "[LDATA] WebSocket failure: ${status}"
+        } else {
+            logDebug "[LDATA] WebSocket disconnected: ${status}"
+        }
+        // Cooldown guard — only schedule one reconnect at a time
         if (!state.wsReconnectPending) {
             state.wsReconnectPending = true
             runIn(30, "wsReconnect")
@@ -1063,15 +1148,27 @@ def webSocketStatus(String status) {
 def parse(String message) {
     if (settings.wsLogging) log.debug "[LDATA] WS raw: ${message}"
 
+    // Track last received message time for watchdog
+    state.wsLastSeen = now()
+
     try {
+        // Leviton server uses plain JSON over WebSocket — NOT Socket.IO.
+        // Do NOT send "2" or any non-JSON message; the server closes the connection immediately.
         def payload = new JsonSlurper().parseText(message)
 
-        // Auth ready confirmation
-        if (payload.status == "ready") {
+        // Server heartbeat: sends "not ready" then "ready" as its own keepalive cycle.
+        // Receiving these resets wsLastSeen above — no response needed from us.
+        if (payload.type == "status" && payload.status == "not ready") {
+            logDebug "[LDATA] WS heartbeat: not ready (${payload.connectionId})"
+            return
+        }
+
+        // Auth ready — server is ready to accept subscriptions
+        if (payload.type == "status" && payload.status == "ready") {
             logDebug "[LDATA] WS authenticated — sending subscriptions"
+            state.wsConnected = true
             sendEvent(name: "wsStatus", value: "Connected")
             sendEvent(name: "presence", value: "present")
-            // PATCH: clear reconnect flag once successfully connected
             state.wsReconnectPending = false
             sendWsSubscriptions()
             return
@@ -1090,7 +1187,7 @@ def parse(String message) {
         }
 
     } catch (Exception e) {
-        log.warn "[LDATA] WS parse error: ${e.message}"
+        log.warn "[LDATA] WS parse error: ${e.message} | raw: ${message?.take(120)}"
     }
 }
 
