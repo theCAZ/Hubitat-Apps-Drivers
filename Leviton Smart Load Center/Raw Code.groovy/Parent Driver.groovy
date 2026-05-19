@@ -1111,7 +1111,7 @@ def wsPing() {
     }
 
     // Silent telemetry only
-    logDebug "[LDATA] WS watchdog: last message ${age.toInteger()}s ago"
+    return
 }
 // Auto-disable debug logging after 30 minutes
 def disableDebugLogging() {
@@ -1249,7 +1249,6 @@ private void sendWsSubscriptions() {
     subs.each { sub ->
         try {
              interfaces.webSocket.sendMessage(JsonOutput.toJson(sub))
-            logDebug "[LDATA] Subscribed: ${sub.subscription.modelName} ${sub.subscription.modelId}"
         } catch (Exception e) {
              logDebug "[LDATA] Subscription send error: ${e.message}"
            }
