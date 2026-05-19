@@ -34,6 +34,17 @@
  *             BigDecimal, Float) to Float before rounding, fixing BigDecimal.round(int)
  *             errors thrown by WS notification handlers (updateBreakerChild,
  *             updateCtChild, handleWsPanelUpdate, parsePanels sendEvents)
+ *   v1.1.2
+ *   - PATCH: Staggered WS subscription sends with 100ms pause between each message
+ *             to prevent server-side flood/rate-limit disconnect
+ *   - PATCH: Normalised all subscription modelId values to toString() — IotCt was
+ *             using toInteger() which caused a type mismatch the server may reject
+ *   v1.1.3
+ *   - PATCH: Removed bandwidthToggle() from REST poll loop — firing it every
+ *             poll cycle was resetting the panel's cloud connection and causing
+ *             the WS to disconnect/reconnect every ~30-60 seconds
+ *   - ADDED: "Disable Bandwidth Keepalive" preference — toggle off if keepalive
+ *             PUTs are still causing WS instability
  */
 
 import groovy.json.JsonSlurper
@@ -46,7 +57,7 @@ metadata {
         namespace: "jdthomas24",
         author: "Community Port from rwoldberg/ldata-ha",
         description: "Leviton Smart Panel (LDATA/LWHEM) integration with breaker monitoring and control",
-        version: "1.1.1"
+        version: "1.1.3"
     ) {
         capability "Initialize"
         capability "Refresh"
@@ -89,6 +100,12 @@ metadata {
               defaultValue: false,
               description: "Enable switch capability on breaker child devices (trip/reset remotely)"
 
+        input name: "disableBandwidthKeepalive",
+              type: "bool",
+              title: "Disable Bandwidth Keepalive",
+              defaultValue: false,
+              description: "Stop sending bandwidth:1 keepalive PUTs every minute. Disable if keepalives are causing WebSocket disconnects."
+
         input name: "debugLogging",
               type: "bool",
               title: "Enable Debug Logging",
@@ -96,7 +113,7 @@ metadata {
 
         input name: "wsLogging",
               type: "bool",
-              title: "Enable WebSocket Message Logging",
+              title: "Enable WebSocket Raw Message Logging",
               defaultValue: false
     }
 }
@@ -772,8 +789,10 @@ private void bandwidthToggle(String panelId, String panelType = "WHEMS") {
     }
 }
 
-// Scheduled keepalive — PUT bandwidth:1 to every panel every 45s
+// Scheduled keepalive — PUT bandwidth:1 to every panel every minute
+// Can be disabled in preferences if it causes WS disconnects
 def bandwidthKeepalive() {
+    if (settings.disableBandwidthKeepalive) return
     if (!state.panels || !state.authToken) return
     state.panels.each { panelId, panel ->
         def url = (panel.panel_type == "LDATA")
@@ -803,9 +822,10 @@ def restPoll() {
         def panelType = panelData.panel_type ?: "WHEMS"
 
         try {
-            // Bandwidth toggle to force panel to push fresh data
-            bandwidthToggle(panelId, panelType)
-            pauseExecution(2000)
+            // PATCH: removed bandwidthToggle() from REST poll — calling it every
+            // poll cycle causes the Leviton cloud to reset the panel's WS connection.
+            // The toggle is still used during initial discovery and the dedicated
+            // bandwidthKeepalive() scheduled method handles ongoing keepalive.
 
             // Fetch fresh breaker data
             def freshBreakers = getWhemsBreakers(panelId)
@@ -1092,28 +1112,36 @@ private void sendWsSubscriptions() {
 
     // Subscribe to each residence
     state.residenceIds?.each { resId ->
-        subs << [type: "subscribe", subscription: [modelName: "Residence", modelId: resId]]
+        subs << [type: "subscribe", subscription: [modelName: "Residence", modelId: resId.toString()]]
     }
 
     // Subscribe to each panel
     state.panels?.each { panelId, panel ->
-        subs << [type: "subscribe", subscription: [modelName: "IotWhem", modelId: panelId]]
+        subs << [type: "subscribe", subscription: [modelName: "IotWhem", modelId: panelId.toString()]]
     }
 
     // Subscribe to each breaker
     state.breakers?.each { bId, bd ->
-        subs << [type: "subscribe", subscription: [modelName: "ResidentialBreaker", modelId: bId]]
+        subs << [type: "subscribe", subscription: [modelName: "ResidentialBreaker", modelId: bId.toString()]]
     }
 
     // Subscribe to each CT
+    // PATCH: use toString() consistently — toInteger() was causing type mismatch
+    //        which may have caused the server to reject and close the socket
     state.cts?.each { ctId, ctd ->
-        subs << [type: "subscribe", subscription: [modelName: "IotCt", modelId: ctId.toInteger()]]
+        subs << [type: "subscribe", subscription: [modelName: "IotCt", modelId: ctId.toString()]]
     }
 
     logDebug "[LDATA] Sending ${subs.size()} WS subscriptions"
-    subs.each { sub ->
+
+    // PATCH: stagger subscription sends with a small pause between each.
+    // Sending all messages in a tight loop can trigger server-side rate limiting
+    // or flood detection, causing the server to close the connection immediately.
+    subs.eachWithIndex { sub, idx ->
         try {
+            if (idx > 0) pauseExecution(100)   // 100ms between each subscription
             interfaces.webSocket.sendMessage(JsonOutput.toJson(sub))
+            logDebug "[LDATA] Subscribed: ${sub.subscription.modelName} ${sub.subscription.modelId}"
         } catch (Exception e) {
             logDebug "[LDATA] Subscription send error: ${e.message}"
         }
