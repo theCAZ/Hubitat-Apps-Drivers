@@ -1231,17 +1231,16 @@ private void sendWsSubscriptions() {
 
     logDebug "[LDATA] Sending ${subs.size()} WS subscriptions"
 
-    // PATCH: stagger subscription sends with a small pause between each.
-    // Sending all messages in a tight loop can trigger server-side rate limiting
-    // or flood detection, causing the server to close the connection immediately.
-    subs.eachWithIndex { sub, idx ->
+       // Send WS subscriptions immediately.
+        // Hubitat websockets do not behave well with pauseExecution()
+        // during active socket operations.
+    subs.each { sub ->
         try {
-            if (idx > 0) pauseExecution(100)   // 100ms between each subscription
-            interfaces.webSocket.sendMessage(JsonOutput.toJson(sub))
+             interfaces.webSocket.sendMessage(JsonOutput.toJson(sub))
             logDebug "[LDATA] Subscribed: ${sub.subscription.modelName} ${sub.subscription.modelId}"
         } catch (Exception e) {
-            logDebug "[LDATA] Subscription send error: ${e.message}"
-        }
+             logDebug "[LDATA] Subscription send error: ${e.message}"
+           }
     }
 }
 
