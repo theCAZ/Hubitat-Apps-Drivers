@@ -1740,6 +1740,7 @@ def processScanChunk() {
                         if (debugEnabled()) log.debug "${device.displayName}: ping confirmed working — device responded after verification attempt"
                     }
                     def elapsed = (lastSeen - prevLastSeen) / (1000 * 60)
+                    data.lastSeen = lastSeen
                     if (elapsed >= minGate) {
                         def recordSample = true
                         if (filtered) {
@@ -1755,7 +1756,6 @@ def processScanChunk() {
                                 data.avgInterval = data.samples.sum() / data.samples.size()
                             }
                         }
-                        data.lastSeen = lastSeen
                     }
                 }
                 data.protocol     = protocol
@@ -3303,4 +3303,3 @@ def infoPage(Map params = [:]) {
         }
     }
 }
-
