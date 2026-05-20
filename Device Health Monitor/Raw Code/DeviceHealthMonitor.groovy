@@ -1,6 +1,6 @@
 /**
  * Device Health Monitor
- * Version: 1.5.0
+ * Version: 1.5.1
  *
  * Author: jdthomas24
  */
@@ -14,7 +14,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.5.0",
+    version: "1.5.1",
     doNotFocus: true,
     oauth: true
 )
@@ -1232,7 +1232,7 @@ def mainPage() {
             input "debugMode", "bool",
                   title: "Debug Logging (auto-disables after 30 min)",
                   defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.0</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.1</span>"
         }
     }
 }
@@ -1679,6 +1679,16 @@ def processScanChunk() {
 
             def lastActivity = device.getLastActivity()
             def lastSeen     = (lastActivity ? safeTime(lastActivity) : null) ?: now()
+
+            // Supplement getLastActivity() with currentStates dates — Z-Wave dimmers
+            // and some other devices return stale polling timestamps from getLastActivity()
+            // while the actual last event timestamp lives in currentStates
+            try {
+                def stateDate = device.currentStates?.collect { safeTime(it.date) }?.findAll { it }?.max()
+                if (stateDate && stateDate > lastSeen) lastSeen = stateDate
+            } catch (e) {
+                if (debugEnabled()) log.debug "currentStates date check error for ${device.displayName}: ${e.message}"
+            }
 
             def capMap  = state.deviceCapabilities ?: [:]
             def capKey  = id as String
