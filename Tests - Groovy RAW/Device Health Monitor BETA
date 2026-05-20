@@ -465,7 +465,7 @@ def getStateVerified(deviceId) {
         // State change must have happened after the device's recorded lastSeen
         def stateChangedAfterLastSeen = (tracked.lastChanged as Long) > (data.lastSeen as Long)
         // State change must be recent enough to be meaningful (within 75% of offline threshold)
-        def thresholdMs = ((settings?.offlineThresholdHours ?: 72) * 60 * 60 * 1000 * 0.75).toLong()
+        def thresholdMs = ((settings?.offlineThresholdHours ?: 168) * 60 * 60 * 1000 * 0.75).toLong()
         def stateChangeIsRecent = (now() - (tracked.lastChanged as Long)) < thresholdMs
         return stateChangedAfterLastSeen && stateChangeIsRecent
     } catch (e) {
@@ -1101,7 +1101,7 @@ def mainPage() {
 
         def scanIntervalLabel  = ["0.5": "Every 30 min", "1": "Hourly", "3": "Every 3 h", "6": "Every 6 h"]
         def currentScan        = scanIntervalLabel[settings?.scanInterval ?: "3"] ?: "Every 3 h"
-        def currentThreshold   = settings?.offlineThresholdHours ?: 72
+        def currentThreshold   = settings?.offlineThresholdHours ?: 168
         def snoozeOn           = snoozeEnabled()
         def currentSnooze      = settings?.snoozeDurationHours ?: 24
         def modeOn             = settings?.enableModeRestriction == true
@@ -1126,7 +1126,7 @@ def mainPage() {
 
             paragraph "<b>Offline after inactivity (hours)</b> — devices with no activity beyond this threshold are marked Offline."
             input "offlineThresholdHours", "number", title: "Offline after inactivity (hours):",
-                  defaultValue: 72, required: true, submitOnChange: true
+                  defaultValue: 168, required: true, submitOnChange: true
 
             paragraph "<b>Snooze</b> — enable or disable snooze globally."
             input "enableSnooze", "bool", title: "Enable snooze", defaultValue: false, submitOnChange: true
@@ -1800,7 +1800,7 @@ def updateHealth(device) {
         return
     }
 
-    def offlineThreshold     = ((settings?.offlineThresholdHours ?: 72) * 60).toDouble()
+    def offlineThreshold     = ((settings?.offlineThresholdHours ?: 168) * 60).toDouble()
     def minutesSinceLastSeen = (now() - (data.lastSeen ?: now())) / (1000 * 60)
 
     if (minutesSinceLastSeen >= offlineThreshold) {
@@ -3260,7 +3260,7 @@ def infoPage(Map params = [:]) {
                       "<tr><td style='padding:4px 8px;'>🟢 Good</td><td style='padding:4px 8px;'>Checking in within 2× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟠 Fair</td><td style='padding:4px 8px;'>Checking in within 3× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🔴 Poor</td><td style='padding:4px 8px;'>Checking in beyond 3× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>💀 Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 72}h). Low activity devices that cannot be verified are capped at Poor instead.</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>💀 Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity devices that cannot be verified are capped at Poor instead.</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>😴 Snoozed</td><td style='padding:4px 8px;'>Excluded from notifications for a set duration</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>ℹ️ Low Activity</td><td style='padding:4px 8px;'>Monitored 7+ days with fewer than 3 samples — infrequently used device</td></tr>" +
                       "</table></div></div>"
