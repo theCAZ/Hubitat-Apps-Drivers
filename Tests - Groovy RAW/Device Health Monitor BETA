@@ -1467,7 +1467,7 @@ def runDeepVerificationScan() {
 
     // Schedule finalization after all batches complete + buffer
     def finalizeDelay = (totalGroups * 2) + 5
-    runIn(1, "processDeepScanGroup", [overwrite: false])
+    processDeepScanGroup()
     runIn(finalizeDelay, "finalizeDeepScan", [overwrite: false])
 }
 
@@ -1561,6 +1561,10 @@ def finalizeDeepScan() {
     unschedule("runDeepVerificationScan")
 
     log.info "Device Health Monitor: deep verification scan complete — ${verified} verified, ${unverifiable} unverifiable, ${declared} still declared"
+
+    // Trigger a regular scan to pick up any device responses to the pings
+    runIn(5, "scanAllDevices", [overwrite: true])
+    log.info "Device Health Monitor: running scan to check for ping responses"
 }
 
 // ============================================================
