@@ -7,7 +7,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
     iconUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Tests%20-%20Groovy%20RAW/Battery%20Monitor%202.0%20BETA%20Tests",
     iconX2Url: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
-    version: "2.4.24",
+    version: "2.5.25",
     doNotFocus: true,
     oauth: true
 )
@@ -117,7 +117,6 @@ def initialize() {
     if (state.trend             == null) state.trend             = [:]
     if (state.notifSnoozedUntil == null) state.notifSnoozedUntil = 0
 
-    // OAuth token creation
     if (!state.accessToken) {
         try {
             createAccessToken()
@@ -159,6 +158,8 @@ preferences {
     page(name: "sendNotificationPage")
     page(name: "deviceManagePage")
     page(name: "deviceActionsPage")
+    page(name: "bulkActionsPage")
+    page(name: "bulkActionsResultPage")
 }
 
 // ============================================================
@@ -179,7 +180,6 @@ def mainPage() {
                   required: false
         }
 
-        // ── Web Portal ───────────────────────────────────────
         def portalEnabled    = state.accessToken != null
         def portalStatus     = portalEnabled ? "<span style='color:blue; font-weight:bold;'>Enabled</span>" : "<span style='color:red; font-weight:bold;'>Not Enabled</span>"
         def portalSectionTitle = "🌐 Battery Web Portal — ${portalStatus}"
@@ -207,7 +207,6 @@ def mainPage() {
             }
         }
 
-        // ── Device Selection ─────────────────────────────────
         def devicesSelected = (autoDevices?.size() ?: 0) > 0
         def devSectionTitle = devicesSelected
             ? "<b>Selected Monitored Devices</b> — <span style='color:blue;'>${autoDevices.size()} selected</span>"
@@ -257,7 +256,6 @@ def mainPage() {
                   submitOnChange: true
         }
 
-        // ── Notification Snooze ──────────────────────────────
         def snoozed         = state.notifSnoozedUntil && state.notifSnoozedUntil >= now()
         def snoozeHoursLeft = snoozed ? Math.ceil((state.notifSnoozedUntil - now()) / 3600000).toInteger() : 0
         def snoozeSectionTitle = snoozed
@@ -294,7 +292,6 @@ def mainPage() {
             }
         }
 
-        // ── Notifications ────────────────────────────────────
         def notifOn              = settings?.enablePush != false
         def notificationSettings = (notificationSettings != false)
         def notifSectionTitle    = "<b>Notifications</b> — <span style='color:${notifOn ? "blue" : "red"};'>${notifOn ? "ON" : "OFF"}</span>"
@@ -334,7 +331,6 @@ def mainPage() {
             }
         }
 
-        // ── Reports ──────────────────────────────────────────
         section("<b>Reports:</b>") {
             href(name: "toSummary",   page: "summaryPage",      title: "<b>Battery Summary</b>",              description: "Battery levels and health ratings")
             href(name: "toTrends",    page: "trendsPage",       title: "<b>Battery Trends</b>",               description: "Drain rates and trend history")
@@ -342,7 +338,6 @@ def mainPage() {
             href(name: "toDevManage", page: "deviceManagePage", title: "<b>🔋 Device Battery Management</b>", description: "Assign battery types, log replacements, reset drain history, view history")
         }
 
-        // ── Help & Support ───────────────────────────────────
         section("<b>Help & Support</b>") {
             href(name: "toInfo", page: "infoPage",
                  title: "📖 App Guide & Reference",
@@ -359,7 +354,7 @@ def mainPage() {
 
         section("<b>Diagnostics</b>") {
             input "debugMode", "bool", title: "Debug Logging (auto-disables after 30 min)", defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.4.24</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.5.25</span>"
         }
     }
 }
@@ -392,8 +387,8 @@ def scanAllDevices() {
     if (!devList) return
     if (debugMode) log.debug "Running scheduled battery scan for ${devList.size()} device(s)"
 
-    def poor    = []
-    def stale   = []
+    def poor  = []
+    def stale = []
 
     devList.each { device ->
         try {
@@ -1057,9 +1052,6 @@ def forceRefreshEndpoint() {
 }
 
 // ============================================================
-// ===================== PORTAL ENDPOINT: GO (NEW TAB) ========
-// ============================================================
-// ============================================================
 // ===================== PORTAL ENDPOINT: DASHBOARD ==========
 // ============================================================
 def serveDashboardPage() {
@@ -1115,11 +1107,9 @@ tr:hover td{background:#1a1a1a}
         html.append("<script>setTimeout(function(){location.reload();},120000);</script>")
         html.append("</head><body><div class='container'>")
 
-        // Header
         html.append("<h2>🔋 Battery Monitor</h2>")
         html.append("<p class='subtitle'>Live Dashboard &nbsp;·&nbsp; Auto-refreshes every 2 min</p>")
 
-        // Summary cards
         html.append("<div class='summary-box'>")
         html.append("<div class='summary-card' style='border-bottom-color:#ef4444;'><b>${poorCount}</b><span>Low Battery</span></div>")
         html.append("<div class='summary-card' style='border-bottom-color:#f97316;'><b>${staleCount}</b><span>Stale</span></div>")
@@ -1128,10 +1118,8 @@ tr:hover td{background:#1a1a1a}
         html.append("<div class='summary-card' style='border-bottom-color:#1a73e8;'><b>${totalCount}</b><span>Total</span></div>")
         html.append("</div>")
 
-        // Action buttons
         html.append("<a href='refresh?access_token=${state.accessToken}' class='btn'>🔄 Force Scan Now</a>")
 
-        // Device table
         html.append("<div class='section-title'>All Devices</div>")
         html.append("<table><thead><tr>")
         html.append("<th>Device</th><th>Battery</th><th>Health</th><th>Drain</th><th>Est Days</th><th>Last Activity</th><th>Type</th>")
@@ -1167,8 +1155,7 @@ tr:hover td{background:#1a1a1a}
         }
 
         html.append("</tbody></table>")
-
-        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.4.24 &nbsp;·&nbsp; jdthomas24</p>")
+        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.5.25 &nbsp;·&nbsp; jdthomas24</p>")
         html.append("</div></body></html>")
 
         return render(contentType: "text/html", data: html.toString(), status: 200)
@@ -1178,7 +1165,6 @@ tr:hover td{background:#1a1a1a}
         return render(contentType: "text/html", data: "<h3 style='color:white;font-family:sans-serif;'>Portal Error</h3><p style='color:#ccc;'>${e}</p>", status: 500)
     }
 }
-
 
 // ============================================================
 // ===================== SUMMARY PAGE ========================
@@ -1365,6 +1351,15 @@ def deviceManagePage(Map params = [:]) {
                  title: "Open Device Actions",
                  description: "Select a device to manage")
         }
+
+        section("<b>📦 Bulk Actions</b>") {
+            paragraph "Log replacements or reset drain history across multiple devices at once.<br>" +
+                      "<span style='color:#94a3b8; font-size:12px;'>ℹ️ Useful when swapping batteries in several devices at the same time.</span>"
+            href(name: "toBulkActions", page: "bulkActionsPage",
+                 title: "Open Bulk Actions",
+                 description: "Select multiple devices to manage")
+        }
+
         section("") {
             paragraph "Assign a battery type and quantity to each device so Battery Monitor can include battery type in notifications and replacement history. " +
                       "This helps you know exactly what to buy when a replacement is needed.<br><br>" +
@@ -1403,6 +1398,177 @@ def deviceManagePage(Map params = [:]) {
                       range: "1..99",
                       width: 4
             }
+        }
+    }
+}
+
+// ============================================================
+// ===================== BULK ACTIONS PAGE ===================
+// ============================================================
+def bulkActionsPage() {
+    def devList = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
+
+    def cooldownMs  = 60000
+    def lastRun     = state.bulkActionLastRun ?: 0
+    def elapsed     = now() - lastRun
+    def onCooldown  = elapsed < cooldownMs
+    def secondsLeft = onCooldown ? Math.ceil((cooldownMs - elapsed) / 1000).toInteger() : 0
+
+    dynamicPage(name: "bulkActionsPage", title: "📦 Bulk Actions", install: false) {
+
+        section("") {
+            paragraph "Select multiple devices to log battery replacements or reset drain history in one shot. " +
+                      "Useful when swapping batteries across several devices at once.<br><br>" +
+                      "<span style='color:#94a3b8; font-size:12px;'>ℹ️ Each action has a 60-second cooldown after running to prevent accidental back-to-back runs.</span>"
+        }
+
+        section("<b>Select Devices</b>") {
+            if (!devList) {
+                paragraph "No monitored devices found."
+                return
+            }
+            input "bulkSelectedDevices", "enum",
+                  title: "Devices:",
+                  options: devList.collectEntries { dev ->
+                      def lvl = ""
+                      try { lvl = dev.currentValue("battery") != null ? " (${dev.currentValue("battery").toInteger()}%)" : "" } catch (e) { }
+                      [(dev.id): "${dev.displayName}${lvl}"]
+                  },
+                  multiple: true,
+                  required: false,
+                  submitOnChange: false
+        }
+
+        if (onCooldown) {
+            section("<b>Actions</b>") {
+                paragraph "<div style='background-color:#fff3cd; border-left:3px solid #ffc107; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
+                          "<span style='color:#856404;'>⏱ Bulk actions are on cooldown — available again in <b>${secondsLeft}s</b>. " +
+                          "This prevents accidental back-to-back runs.</span></div>"
+            }
+            return
+        }
+
+        section("<b>Actions</b>") {
+            paragraph "Both actions below operate on the selected devices above. " +
+                      "You may confirm one or both — each executes independently."
+            input "bulkReplaceConfirm", "bool",
+                  title: "✅ Confirm — log battery replacement for all selected devices",
+                  defaultValue: false,
+                  submitOnChange: true
+            input "bulkResetConfirm", "bool",
+                  title: "🔄 Confirm — reset drain history for all selected devices (no replacement logged)",
+                  defaultValue: false,
+                  submitOnChange: true
+        }
+
+        def anyConfirmed = (settings?.bulkReplaceConfirm == true || settings?.bulkResetConfirm == true)
+        def hasSelection = (settings?.bulkSelectedDevices?.size() ?: 0) > 0
+
+        if (anyConfirmed && !hasSelection) {
+            section("") {
+                paragraph "<div style='background-color:#f8d7da; border-left:3px solid #f5c6cb; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
+                          "<span style='color:#721c24;'>⚠️ No devices selected — please select at least one device above.</span></div>"
+            }
+            return
+        }
+
+        if (anyConfirmed && hasSelection) {
+            section("") {
+                href(name: "toBulkActionsResult", page: "bulkActionsResultPage",
+                     title: "▶ Apply — tap to execute and see results",
+                     description: "")
+            }
+        }
+    }
+}
+
+// ============================================================
+// ===================== BULK ACTIONS RESULT PAGE ============
+// ============================================================
+def bulkActionsResultPage() {
+    def doReplace   = settings?.bulkReplaceConfirm == true
+    def doReset     = settings?.bulkResetConfirm   == true
+    def selectedIds = settings?.bulkSelectedDevices ?: []
+
+    def replacedNames = []
+    def resetNames    = []
+    def skippedNames  = []
+
+    if (selectedIds) {
+        def selectedDevices = autoDevices?.findAll { selectedIds.contains(it.id) } ?: []
+
+        selectedDevices.each { device ->
+            try {
+                def level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
+
+                if (doReplace) {
+                    logReplacement(device, level, true)
+                    replacedNames << "${device.displayName} (${level}%)"
+                } else if (doReset) {
+                    def existing = state.history[device.id] ?: [:]
+                    state.history[device.id] = [
+                        lastLevel:     existing.lastLevel     ?: level,
+                        lastDate:      now(),
+                        lastScanDate:  now(),
+                        firstSeenDate: existing.firstSeenDate ?: existing.replacedTime ?: existing.lastDate ?: now(),
+                        replacedTime:  existing.replacedTime,
+                        justReplaced:  existing.justReplaced ?: false,
+                        drain:         0.3,
+                        samples:       [],
+                        zeroCount:     0
+                    ]
+                    state.trend[device.id] = "Stable"
+                    state.history = state.history
+                    resetNames << device.displayName
+                }
+            } catch (e) {
+                skippedNames << device.displayName
+                log.warn "Bulk action failed for ${device.displayName}: ${e.message}"
+            }
+        }
+    }
+
+    state.bulkActionLastRun = now()
+
+    app.updateSetting("bulkReplaceConfirm",  [value: false, type: "bool"])
+    app.updateSetting("bulkResetConfirm",    [value: false, type: "bool"])
+    app.updateSetting("bulkSelectedDevices", [value: [], type: "enum"])
+
+    dynamicPage(name: "bulkActionsResultPage", title: "📦 Bulk Actions — Result", install: false) {
+
+        if (!doReplace && !doReset) {
+            section("<b>Nothing to do</b>") {
+                paragraph "No actions were confirmed — nothing was changed. Tap back to return."
+            }
+            return
+        }
+
+        if (replacedNames) {
+            section("<b>✅ Battery Replacements Logged</b>") {
+                paragraph "<div style='background-color:#d4edda; border-left:3px solid #28a745; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
+                          "<span style='color:#155724;'><b>${replacedNames.size()} device(s) updated</b> — replacement logged, drain history reset, health set to ⏳ Pending.</span><br><br>" +
+                          "<span style='color:#155724;'>" + replacedNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+            }
+        }
+
+        if (resetNames) {
+            section("<b>🔄 Drain History Reset</b>") {
+                paragraph "<div style='background-color:#d4edda; border-left:3px solid #28a745; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
+                          "<span style='color:#155724;'><b>${resetNames.size()} device(s) reset</b> — drain history cleared, health set to ⏳ Pending. No replacement logged.</span><br><br>" +
+                          "<span style='color:#155724;'>" + resetNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+            }
+        }
+
+        if (skippedNames) {
+            section("<b>⚠️ Skipped</b>") {
+                paragraph "<div style='background-color:#fff3cd; border-left:3px solid #ffc107; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
+                          "<span style='color:#856404;'>The following devices encountered an error and were skipped:<br><br>" +
+                          skippedNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+            }
+        }
+
+        section("") {
+            paragraph "<span style='color:#94a3b8; font-size:12px;'>⏱ Bulk actions are on a 60-second cooldown. Tap back to return to the management page.</span>"
         }
     }
 }
@@ -1901,7 +2067,6 @@ def infoPage(Map params = [:]) {
                       "<b>Adding to a Hubitat Dashboard:</b> Add a Link tile to your dashboard, paste in your Cloud or Local URL from the main page, and set a label like 🔋 Battery Portal. Tapping the tile opens the portal — use the back button to return to your dashboard.</div>"
         }
 
-
         section("<b>🔑 Battery Level Ranges</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>Battery level colors reflect current charge percentage. " +
                       "Health ratings use the same color scheme but are based on drain rate — not battery percentage. " +
@@ -1961,7 +2126,9 @@ def infoPage(Map params = [:]) {
                       "• Assign or change battery type and count<br>" +
                       "• Log a manual battery replacement<br>" +
                       "• Reset drain history without logging a replacement<br>" +
-                      "• View all replacement history entries for that device</div>"
+                      "• View all replacement history entries for that device<br><br>" +
+                      "<b>Bulk Actions:</b> Log replacements or reset drain history across multiple devices at once — " +
+                      "useful when swapping batteries in several devices at the same time. Includes a 60-second cooldown to prevent accidental back-to-back runs.</div>"
         }
 
         section("<b>🔄 Force Scan & 🔁 Replacement Detection</b>") {
@@ -1976,6 +2143,7 @@ def infoPage(Map params = [:]) {
                       "• Assign battery types in 🔋 Device Battery Management — used in the portal and notifications<br>" +
                       "• Set Scan Interval to Hourly to build health ratings faster<br>" +
                       "• After replacing a battery, log it in 🔋 Device Battery Management<br>" +
+                      "• Use Bulk Actions when replacing batteries in multiple devices at once<br>" +
                       "• Use Reset Drain History on locks and sensors if they show Heavy Drain after first install<br>" +
                       "• Use Notification Snooze when traveling<br>" +
                       "• After updating the app, switch to Hourly scan temporarily to rebuild sample data faster<br>" +
@@ -1983,4 +2151,3 @@ def infoPage(Map params = [:]) {
         }
     }
 }
-
