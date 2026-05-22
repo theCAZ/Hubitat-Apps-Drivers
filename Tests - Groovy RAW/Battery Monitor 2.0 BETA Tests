@@ -38,40 +38,46 @@ def updated() {
     // Detect devices removed from ignore list and restore them
     def previouslyIgnored = state.ignoredDeviceIds ?: []
     def currentIgnored    = (settings?.ignoredDevices?.collect { it as String }) ?: []
-    def restored          = previouslyIgnored.findAll { !currentIgnored.contains(it) }
-    if (restored) {
-        restored.each { deviceId ->
-            def device = autoDevices?.find { it.id == deviceId }
-            if (device) {
-                def level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
-                state.history[device.id] = [
-                    lastLevel:     level,
-                    lastDate:      now(),
-                    lastScanDate:  now(),
-                    firstSeenDate: now(),
-                    replacedTime:  now(),
-                    justReplaced:  true,
-                    drain:         0.3,
-                    samples:       [],
-                    zeroCount:     0
-                ]
-                state.trend[device.id] = "Stable"
-                state.history = state.history
-                state.replacements = state.replacements ?: []
-                state.replacements = state.replacements.findAll { it.device != device.displayName }
-                state.replacements << [
-                    deviceId: device.id,
-                    device:   device.displayName,
-                    level:    level,
-                    date:     new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
-                    type:     "restored"
-                ]
-                state.replacements = state.replacements.sort { a, b -> b.date <=> a.date }
-                if (debugMode) log.debug "Device restored from ignored list: ${device.displayName}"
+
+    // First run after update — seed the state so future removals are detected correctly
+    if (!state.ignoredDeviceIds) {
+        state.ignoredDeviceIds = currentIgnored
+        if (debugMode) log.debug "Seeded ignoredDeviceIds: ${currentIgnored}"
+    } else {
+        def restored = previouslyIgnored.findAll { !currentIgnored.contains(it) }
+        if (restored) {
+            restored.each { deviceId ->
+                def device = autoDevices?.find { it.id == deviceId }
+                if (device) {
+                    def level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
+                    state.history[device.id] = [
+                        lastLevel:     level,
+                        lastDate:      now(),
+                        lastScanDate:  now(),
+                        firstSeenDate: now(),
+                        replacedTime:  now(),
+                        justReplaced:  true,
+                        drain:         0.3,
+                        samples:       [],
+                        zeroCount:     0
+                    ]
+                    state.trend[device.id] = "Stable"
+                    state.history = state.history
+                    state.replacements = state.replacements ?: []
+                    state.replacements << [
+                        deviceId: device.id,
+                        device:   device.displayName,
+                        level:    level,
+                        date:     new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
+                        type:     "restored"
+                    ]
+                    state.replacements = state.replacements.sort { a, b -> b.date <=> a.date }
+                    if (debugMode) log.debug "Device restored from ignored list: ${device.displayName}"
+                }
             }
         }
+        state.ignoredDeviceIds = currentIgnored
     }
-    state.ignoredDeviceIds = currentIgnored
 
     initialize()
 
