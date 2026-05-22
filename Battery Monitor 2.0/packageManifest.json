@@ -6,7 +6,7 @@
   "description": "Advanced Hubitat battery monitoring with analytics, trends and replacement tracking. Recurring scan schedule, confidence-weighted health, EWMA smoothing.",
   "dateReleased": "4/8/26",
   "minimumHEVersion": "2.3.0",
-  "releaseNotes": "v2.5.25 - New: Bulk Actions in Device Battery Management — log battery replacements or reset drain history across multiple devices in one shot. Includes per-device result summary and 60-second cooldown guard to prevent accidental back-to-back runs.",
+  "releaseNotes": "v2.5.26 - New: Ignored Devices — exclude spare or storage devices completely from all reports, notifications, stale checks, health scoring, and the web portal. Removing a device from the list resets its history and logs a Restored entry. App Guide trimmed and updated.",
   "apps": [
     {
       "name": "Battery Monitor 2.0",
