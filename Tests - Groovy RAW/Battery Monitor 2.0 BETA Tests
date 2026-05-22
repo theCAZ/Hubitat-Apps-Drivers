@@ -35,50 +35,6 @@ def updated() {
     unschedule()
     unsubscribe()
 
-    // Detect devices removed from ignore list and restore them
-    def previouslyIgnored = state.ignoredDeviceIds ?: []
-    def currentIgnored    = (settings?.ignoredDevices?.collect { it as String }) ?: []
-
-    // First run after update — seed the state so future removals are detected correctly
-    if (!state.ignoredDeviceIds) {
-        state.ignoredDeviceIds = currentIgnored
-        if (debugMode) log.debug "Seeded ignoredDeviceIds: ${currentIgnored}"
-    } else {
-        def restored = previouslyIgnored.findAll { !currentIgnored.contains(it) }
-        if (restored) {
-            restored.each { deviceId ->
-                def device = autoDevices?.find { it.id == deviceId }
-                if (device) {
-                    def level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
-                    state.history[device.id] = [
-                        lastLevel:     level,
-                        lastDate:      now(),
-                        lastScanDate:  now(),
-                        firstSeenDate: now(),
-                        replacedTime:  now(),
-                        justReplaced:  true,
-                        drain:         0.3,
-                        samples:       [],
-                        zeroCount:     0
-                    ]
-                    state.trend[device.id] = "Stable"
-                    state.history = state.history
-                    state.replacements = state.replacements ?: []
-                    state.replacements << [
-                        deviceId: device.id,
-                        device:   device.displayName,
-                        level:    level,
-                        date:     new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
-                        type:     "restored"
-                    ]
-                    state.replacements = state.replacements.sort { a, b -> b.date <=> a.date }
-                    if (debugMode) log.debug "Device restored from ignored list: ${device.displayName}"
-                }
-            }
-        }
-        state.ignoredDeviceIds = currentIgnored
-    }
-
     initialize()
 
     if (debugMode) {
@@ -1473,6 +1429,49 @@ def deviceManagePage(Map params = [:]) {
 def ignoredDevicesPage() {
     def devList = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
 
+    // Detect and process restores directly here — same pattern as bulk actions
+    def previouslyIgnored = state.ignoredDeviceIds ?: []
+    def currentIgnored    = (settings?.ignoredDevices?.collect { it as String }) ?: []
+    def restoredIds       = previouslyIgnored.findAll { !currentIgnored.contains(it) }
+    def restoredNames     = []
+
+    if (restoredIds) {
+        restoredIds.each { deviceId ->
+            def device = autoDevices?.find { it.id == deviceId }
+            if (device) {
+                def level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
+                state.history[device.id] = [
+                    lastLevel:     level,
+                    lastDate:      now(),
+                    lastScanDate:  now(),
+                    firstSeenDate: now(),
+                    replacedTime:  now(),
+                    justReplaced:  true,
+                    drain:         0.3,
+                    samples:       [],
+                    zeroCount:     0
+                ]
+                state.trend[device.id] = "Stable"
+                state.history = state.history
+                state.replacements = state.replacements ?: []
+                state.replacements << [
+                    deviceId: device.id,
+                    device:   device.displayName,
+                    level:    level,
+                    date:     new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
+                    type:     "restored"
+                ]
+                state.replacements = state.replacements.sort { a, b -> b.date <=> a.date }
+                state.replacements = state.replacements
+                restoredNames << "${device.displayName} (${level}%)"
+                if (debugMode) log.debug "Device restored from ignored list: ${device.displayName}"
+            }
+        }
+    }
+
+    // Always sync ignoredDeviceIds to current selection on every page render
+    state.ignoredDeviceIds = currentIgnored
+
     dynamicPage(name: "ignoredDevicesPage", title: "🚫 Ignored Devices", install: false) {
 
         section("") {
@@ -1493,11 +1492,19 @@ def ignoredDevicesPage() {
                   },
                   multiple: true,
                   required: false,
-                  submitOnChange: false
+                  submitOnChange: true
+        }
+
+        if (restoredNames) {
+            section("<b>✅ Devices Restored</b>") {
+                paragraph "<div style='background-color:#d4edda; border-left:3px solid #28a745; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
+                          "<span style='color:#155724;'><b>${restoredNames.size()} device(s) restored</b> — drain history reset, health set to ⏳ Pending, Restored entry logged in Battery Replacement History.</span><br><br>" +
+                          "<span style='color:#155724;'>" + restoredNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+            }
         }
 
         section("") {
-            paragraph "<span style='color:#94a3b8; font-size:12px;'>Changes take effect when you tap Done.</span>"
+            paragraph "<span style='color:#94a3b8; font-size:12px;'>Changes take effect immediately when you add or remove devices.</span>"
         }
     }
 }
@@ -2194,7 +2201,8 @@ def infoPage(Map params = [:]) {
                       "<tr><td>🟠 Fair</td><td>🔴 Heavy Drain</td><td>0.8–1.5%</td><td>Above average — worth monitoring, no alert</td></tr>" +
                       "<tr><td>🔴 Poor</td><td>🔴 Heavy Drain</td><td>&gt; 1.5%</td><td>High drain — High Drain alert fires</td></tr>" +
                       "</table></div><br>" +
-                      "<b>Note:</b> Door locks use higher drain thresholds than other devices. Locks showing 🟠 Moderate trend are not necessarily a concern unless drain is consistently very high.</div>"
+                      "<b>Note:</b> Door locks use higher drain thresholds than other devices. Locks showing 🟠 Moderate trend are not necessarily a concern unless drain is consistently very high.<br><br>" +
+                      "<b>Slow drain devices:</b> Smoke detectors, CO detectors, and other always-on low-power devices may show drain rates at or near 0.00%/day. This is normal — these devices are designed to run for 1–3 years on a single set of batteries. Est Days shows 365 as a maximum; actual battery life may be significantly longer.</div>"
         }
 
         section("<b>⏳ Pending Health & Samples</b>") {
