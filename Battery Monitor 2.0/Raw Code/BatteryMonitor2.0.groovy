@@ -7,7 +7,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
     iconUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Tests%20-%20Groovy%20RAW/Battery%20Monitor%202.0%20BETA%20Tests",
     iconX2Url: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
-    version: "2.5.26",
+    version: "2.5.27",
     doNotFocus: true,
     oauth: true
 )
@@ -366,7 +366,7 @@ def mainPage() {
 
         section("<b>Diagnostics</b>") {
             input "debugMode", "bool", title: "Debug Logging (auto-disables after 30 min)", defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.5.26</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.5.27</span>"
         }
     }
 }
@@ -398,6 +398,7 @@ def scanAllDevices() {
     def devList = (autoDevices ?: []).findAll { !isIgnored(it) }
     if (!devList) return
     if (debugMode) log.debug "Running scheduled battery scan for ${devList.size()} device(s)"
+    log.info "Battery Monitor: scan started — ${devList.size()} device(s)"
 
     def poor  = []
     def stale = []
@@ -421,6 +422,7 @@ def scanAllDevices() {
     def msg = "SCAN: ${devList.size()} device(s) scanned at ${ts}."
     if (poor.size()  > 0) msg += " Low battery: ${poor.join(', ')}."
     if (stale.size() > 0) msg += " Stale: ${stale.join(', ')}."
+    log.info "Battery Monitor: scan complete — ${devList.size()} device(s) processed"
 }
 
 def reportScheduler() {
@@ -1168,7 +1170,7 @@ tr:hover td{background:#1a1a1a}
         }
 
         html.append("</tbody></table>")
-        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.5.26 &nbsp;·&nbsp; jdthomas24</p>")
+        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.5.27 &nbsp;·&nbsp; jdthomas24</p>")
         html.append("</div></body></html>")
 
         return render(contentType: "text/html", data: html.toString(), status: 200)
