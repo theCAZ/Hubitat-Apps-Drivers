@@ -37,9 +37,9 @@ def updated() {
 
     initialize()
 
-    if (debugMode) {
-        runIn(1800, disableDebugLogging)
-    }
+    
+    runIn(1800, disableDebugLogging)
+    
 
     def devList    = autoDevices ?: []
     def currentIds = devList.collect { it.id as String }
