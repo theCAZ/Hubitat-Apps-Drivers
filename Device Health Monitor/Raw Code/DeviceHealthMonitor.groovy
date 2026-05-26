@@ -1225,9 +1225,12 @@ def mainPage() {
         }
 
         section("<b>Diagnostics</b>") {
-            input "debugMode", "bool",
-                  title: "Debug Logging (auto-disables after 30 min)",
-                  defaultValue: false, submitOnChange: true
+        input "debugMode", "bool",
+          title: "Debug Logging (auto-disables after 30 min)",
+          defaultValue: false, submitOnChange: true
+        if (settings?.debugMode == true) {
+            runIn(1800, disableDebugLogging)
+        }
             paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.2</span>"
         }
     }
