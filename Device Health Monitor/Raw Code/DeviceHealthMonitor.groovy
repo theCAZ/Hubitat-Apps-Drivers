@@ -68,8 +68,9 @@ def updated() {
     }
 
     initialize()
-    if (debugEnabled()) runIn(1800, disableDebugLogging)
-}
+    runIn(1800, disableDebugLogging)
+    }
+
 
 def appButtonHandler(btn) {
     if (btn == "btnRunDeepScan") {
@@ -1225,12 +1226,9 @@ def mainPage() {
         }
 
         section("<b>Diagnostics</b>") {
-        input "debugMode", "bool",
-          title: "Debug Logging (auto-disables after 30 min)",
-          defaultValue: false, submitOnChange: true
-        if (settings?.debugMode == true) {
-            runIn(1800, disableDebugLogging)
-        }
+            input "debugMode", "bool",
+                  title: "Debug Logging (auto-disables after 30 min)",
+                  defaultValue: false, submitOnChange: true
             paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.2</span>"
         }
     }
