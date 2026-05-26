@@ -2727,8 +2727,11 @@ def problemDevicesPage() {
             return a.displayName <=> b.displayName
         }
 
-        def unverifiable = allDevs.findAll { getPingStatus(it.id) == "unverifiable" }
-                           .sort { a, b -> a.displayName <=> b.displayName }
+        def unverifiable = allDevs.findAll { 
+            getPingStatus(it.id) == "unverifiable" && 
+            !(state.health?.get(it.id) in ["Excellent", "Good", "Pending"])
+        }
+        .sort { a, b -> a.displayName <=> b.displayName }
 
         def verified     = allDevs.findAll { getPingStatus(it.id) == "verified"  }.size()
         def declared     = allDevs.findAll { getPingStatus(it.id) == "declared"  }.size()
