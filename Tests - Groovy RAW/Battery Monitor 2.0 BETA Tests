@@ -760,41 +760,40 @@ def detectReplacement(device, newLevel, oldLevel) {
 
     def data = state.history[device.id]
 
-    // ── Gate 1: require at least N prior drain samples ──────────────────────
+    // ── Gate 1: require at least 3 prior drain samples (hardcoded) ────────────
     //   Prevents triggering on a newly-added device that starts at 95%+.
-    def minSamples  = (settings?.detectionMinSamples ?: 3).toInteger()
     def sampleCount = data?.samples?.size() ?: 0
-    if (sampleCount < minSamples) {
-        if (debugMode) log.debug "${device.displayName}: replacement gate — only ${sampleCount}/${minSamples} prior samples, skipping"
+    if (sampleCount < 3) {
+        if (debugMode) log.debug "${device.displayName}: replacement gate — only ${sampleCount}/3 prior samples, skipping"
         return
     }
 
-    // ── Gate 2: device must not be newly added ───────────────────────────────
-    //   Skip detection if device has been known for fewer than N days.
-    def minAgeDays = (settings?.detectionMinAgeDays ?: 3).toInteger()
-    def firstSeen  = data?.firstSeenDate ?: data?.lastDate ?: now()
-    def ageDays    = (now() - (firstSeen as Long)) / (1000 * 60 * 60 * 24)
-    if (ageDays < minAgeDays) {
-        if (debugMode) log.debug "${device.displayName}: replacement gate — device only ${ageDays.toInteger()}d old (min ${minAgeDays}d), skipping"
+    // ── Gate 2: device must be at least 3 days old (hardcoded) ──────────────
+    //   Protects against false positives on freshly-added devices.
+    def firstSeen = data?.firstSeenDate ?: data?.lastDate ?: now()
+    def ageDays   = (now() - (firstSeen as Long)) / (1000 * 60 * 60 * 24)
+    if (ageDays < 3) {
+        if (debugMode) log.debug "${device.displayName}: replacement gate — device only ${ageDays.toInteger()}d old (min 3d), skipping"
         return
     }
 
-    // ── Gate 3: cooldown — prevent back-to-back detections ──────────────────
-    //   Suppresses detection for N hours after any replacement is logged.
-    def cooldownHours  = (settings?.detectionCooldownHours ?: 12).toInteger()
-    def lastLogged     = data?.lastReplacementLogged
+    // ── Gate 3: 12h cooldown after last replacement (hardcoded) ─────────────
+    //   Prevents back-to-back duplicate detections.
+    def lastLogged = data?.lastReplacementLogged
     if (lastLogged) {
         def hoursSinceLast = (now() - (lastLogged as Long)) / (1000 * 60 * 60)
-        if (hoursSinceLast < cooldownHours) {
-            if (debugMode) log.debug "${device.displayName}: replacement gate — last replacement ${hoursSinceLast.toInteger()}h ago (cooldown ${cooldownHours}h), skipping"
+        if (hoursSinceLast < 12) {
+            if (debugMode) log.debug "${device.displayName}: replacement gate — last replacement ${hoursSinceLast.toInteger()}h ago (cooldown 12h), skipping"
             return
         }
     }
 
-    // ── Configurable thresholds ──────────────────────────────────────────────
+    // ── Configurable thresholds + implicit jump floor ────────────────────────
+    //   Minimum jump is derived from the threshold gap, floored at 25%
+    //   so misconfigured thresholds can never allow trivially small jumps.
     def oldThresh = (settings?.detectionOldThreshold ?: 40).toInteger()
     def newThresh = (settings?.detectionNewThreshold ?: 90).toInteger()
-    def minJump   = (settings?.detectionMinJump      ?: 15).toInteger()
+    def minJump   = Math.max(25, newThresh - oldThresh)
     def largeJump = newLevel - oldLevel
 
     // ── Primary detection condition ──────────────────────────────────────────
@@ -808,19 +807,11 @@ def detectReplacement(device, newLevel, oldLevel) {
         return
     }
 
-    // ── Gate 4: two-reading confirmation ────────────────────────────────────
+    // ── Gate 4: two-reading confirmation (hardcoded ON, 48h window) ─────────
     //   First qualifying read stages a pending entry.
-    //   Second qualifying read within the window confirms and logs.
-    //   If disabled, logs immediately.
-    def requireConfirm   = (settings?.detectionRequireConfirm != false)
-    def confirmWindowHrs = (settings?.detectionConfirmWindowHours ?: 48).toInteger()
-
-    if (!requireConfirm) {
-        data.zeroCount = 0
-        logReplacement(device, newLevel, false)
-        if (debugMode) log.debug "${device.displayName}: replacement detected (confirmation disabled) — ${oldLevel}% → ${newLevel}%"
-        return
-    }
+    //   Second qualifying read within 48h confirms and logs.
+    def requireConfirm   = true
+    def confirmWindowHrs = 48
 
     if (!state.pendingReplacement) state.pendingReplacement = [:]
 
@@ -877,9 +868,8 @@ def detectReplacement(device, newLevel, oldLevel) {
 def confirmPendingReplacements() {
     if (!state.pendingReplacement || state.pendingReplacement.isEmpty()) return
 
-    def confirmWindowHrs = (settings?.detectionConfirmWindowHours ?: 48).toInteger()
-    def newThresh        = (settings?.detectionNewThreshold        ?: 90).toInteger()
-    def windowMs         = confirmWindowHrs * 60 * 60 * 1000
+    def newThresh = (settings?.detectionNewThreshold ?: 90).toInteger()
+    def windowMs  = 48 * 60 * 60 * 1000  // 48h hardcoded confirmation window
     def toRemove         = []
 
     state.pendingReplacement.each { deviceId, pending ->
@@ -1512,102 +1502,59 @@ def deviceManagePage(Map params = [:]) {
 
     dynamicPage(name: "deviceManagePage", title: "🔋 Device Battery Management", install: false) {
 
-        section("<b>⚙️ Device Actions</b>") {
+        // ── Actions ─────────────────────────────────────────────────────────
+        section("<b>Actions</b>") {
+            paragraph "<div style='border-bottom:1px solid #e0e0e0; margin-bottom:4px;'></div>"
             href(name: "toDeviceActions", page: "deviceActionsPage",
-                 title: "Open Device Actions",
+                 title: "⚙️ Device Actions",
                  description: "Log a replacement, reset drain history, change battery type, or view history for a single device. Last selected device is remembered.")
-        }
-
-        section("<b>📦 Bulk Actions</b>") {
+            paragraph "<div style='border-top:1px solid #f0f0f0; margin:4px 0;'></div>"
             href(name: "toBulkActions", page: "bulkActionsPage",
-                 title: "Open Bulk Actions",
+                 title: "📦 Bulk Actions",
                  description: "Log replacements or reset drain history across multiple devices at once. Useful when swapping batteries in several devices at the same time.")
         }
 
-        section("<b>🔍 Auto-Detection Settings</b>", hideable: true, hidden: true) {
-            paragraph "Configure the thresholds and safeguards used when Battery Monitor " +
-                      "automatically detects a battery replacement.<br><br>" +
-                      "<b>Thresholds</b> define what qualifies as a replacement event. " +
-                      "<b>Safeguards</b> prevent false positives from spurious readings, " +
-                      "newly-added devices, or back-to-back detections."
+        // ── Settings ─────────────────────────────────────────────────────────
+        section("<b>Settings</b>") {
+            paragraph "<div style='border-bottom:1px solid #e0e0e0; margin-bottom:4px;'></div>"
 
-            paragraph "<b>── Thresholds ──</b>"
+            def ignoredSectionTitle = ignoredCount > 0
+                ? "🚫 Ignored Devices — <span style='color:blue;'>${ignoredCount} ignored</span>"
+                : "🚫 Ignored Devices"
+            href(name: "toIgnoredDevices", page: "ignoredDevicesPage",
+                 title: ignoredSectionTitle,
+                 description: ignoredCount > 0
+                     ? "${ignoredCount} device(s) ignored — excluded from all reports, notifications, and the web portal. Removing a device resets its history and logs a Restored entry."
+                     : "No devices ignored — add devices to exclude them from all reports, notifications, stale checks, health scoring, and the web portal.")
+
+            paragraph "<div style='border-top:1px solid #f0f0f0; margin:4px 0;'></div>"
+        }
+
+        section("<b>🔍 Auto-Detection Settings</b>", hideable: true, hidden: true) {
+            paragraph "Controls what battery level change qualifies as a replacement. " +
+                      "All other safeguards (confirmation, cooldown, minimum samples) run automatically in the background."
 
             input "detectionOldThreshold", "number",
-                  title: "Old level must be at or below (%):",
-                  description: "Battery must have been this low before the jump. Default: 40",
+                  title: "Battery was at or below (%):",
+                  description: "The battery must have been this low before the jump was detected. Default: 40",
                   defaultValue: 40,
                   range: "10..60",
                   required: false
 
             input "detectionNewThreshold", "number",
-                  title: "New level must be at or above (%):",
-                  description: "Battery must jump to at least this level. Default: 90",
+                  title: "Battery jumped to at or above (%):",
+                  description: "The battery must reach at least this level for a replacement to be detected. Default: 90",
                   defaultValue: 90,
                   range: "70..100",
                   required: false
 
-            input "detectionMinJump", "number",
-                  title: "Minimum jump size (%):",
-                  description: "The jump from old to new must be at least this large. Default: 15",
-                  defaultValue: 15,
-                  range: "5..60",
-                  required: false
-
-            paragraph "<b>── Safeguards ──</b>"
-
-            input "detectionRequireConfirm", "bool",
-                  title: "✅ Require two-reading confirmation before logging",
-                  description: "First qualifying read stages a pending entry. Only confirmed after a second qualifying read within the window below. Recommended ON.",
-                  defaultValue: true,
-                  submitOnChange: true
-
-            if (settings?.detectionRequireConfirm != false) {
-                input "detectionConfirmWindowHours", "number",
-                      title: "Confirmation window (hours):",
-                      description: "How long to wait for a confirming read before expiring the pending entry. Default: 48",
-                      defaultValue: 48,
-                      range: "1..168",
-                      required: false
-            }
-
-            input "detectionCooldownHours", "number",
-                  title: "Cooldown after last replacement (hours):",
-                  description: "Suppresses auto-detection for this long after any replacement (auto or manual) is logged. Default: 12",
-                  defaultValue: 12,
-                  range: "1..72",
-                  required: false
-
-            input "detectionMinSamples", "number",
-                  title: "Minimum prior samples required:",
-                  description: "Device must have at least this many drain samples before detection fires. Prevents false positives on newly-added devices. Default: 3",
-                  defaultValue: 3,
-                  range: "2..10",
-                  required: false
-
-            input "detectionMinAgeDays", "number",
-                  title: "Minimum device age (days):",
-                  description: "Device must have been monitored at least this many days before detection fires. Default: 3",
-                  defaultValue: 3,
-                  range: "1..14",
-                  required: false
-
-            paragraph "<span style='color:#94a3b8; font-size:12px;'>ℹ️ Pending detections waiting for confirmation are visible in debug logs. " +
-                      "Each scan pass resolves or expires them automatically.</span>"
+            paragraph "<span style='color:#94a3b8; font-size:12px;'>ℹ️ A minimum jump of 25% is always enforced in the background regardless of the values above. " +
+                      "Pending detections awaiting confirmation are visible in debug logs.</span>"
         }
 
-        def ignoredSectionTitle = ignoredCount > 0
-            ? "<b>🚫 Ignored Devices</b> — <span style='color:blue;'>${ignoredCount} ignored</span>"
-            : "<b>🚫 Ignored Devices</b>"
-        section(ignoredSectionTitle) {
-            href(name: "toIgnoredDevices", page: "ignoredDevicesPage",
-                 title: "Manage Ignored Devices",
-                 description: ignoredCount > 0
-                     ? "${ignoredCount} device(s) ignored — excluded from all reports, notifications, and the web portal. Removing a device resets its history and logs a Restored entry."
-                     : "No devices ignored — add devices to exclude them from all reports, notifications, stale checks, health scoring, and the web portal.")
-        }
-
+        // ── Battery Types ────────────────────────────────────────────────────
         section("") {
+            paragraph "<div style='border-bottom:2px solid #e0e0e0; margin-bottom:8px;'></div>"
             paragraph "Assign a battery type and quantity to each device so Battery Monitor can include battery type in notifications and replacement history. " +
                       "This helps you know exactly what to buy when a replacement is needed.<br><br>" +
                       "Set the type and count for as many devices as you like, then tap <b>Done</b> to save."
