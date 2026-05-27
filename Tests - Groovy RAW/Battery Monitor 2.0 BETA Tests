@@ -181,6 +181,8 @@ preferences {
     page(name: "bulkActionsPage")
     page(name: "bulkActionsResultPage")
     page(name: "ignoredDevicesPage")
+    page(name: "detectionSettingsPage")
+    page(name: "batteryTypesPage")
 }
 
 // ============================================================
@@ -1503,36 +1505,44 @@ def deviceManagePage(Map params = [:]) {
     dynamicPage(name: "deviceManagePage", title: "🔋 Device Battery Management", install: false) {
 
         // ── Actions ─────────────────────────────────────────────────────────
-        section("<b>Actions</b>") {
-            paragraph "<div style='border-bottom:1px solid #e0e0e0; margin-bottom:4px;'></div>"
+        section("<span style='font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8;'>Actions</span>") {
             href(name: "toDeviceActions", page: "deviceActionsPage",
                  title: "⚙️ Device Actions",
                  description: "Log a replacement, reset drain history, change battery type, or view history for a single device. Last selected device is remembered.")
-            paragraph "<div style='border-top:1px solid #f0f0f0; margin:4px 0;'></div>"
             href(name: "toBulkActions", page: "bulkActionsPage",
                  title: "📦 Bulk Actions",
                  description: "Log replacements or reset drain history across multiple devices at once. Useful when swapping batteries in several devices at the same time.")
         }
 
-        // ── Settings ─────────────────────────────────────────────────────────
-        section("<b>Settings</b>") {
-            paragraph "<div style='border-bottom:1px solid #e0e0e0; margin-bottom:4px;'></div>"
+        // ── Configuration ────────────────────────────────────────────────────
+        def ignoredSectionTitle = ignoredCount > 0
+            ? "🚫 Ignored Devices — <span style='color:blue;'>${ignoredCount} ignored</span>"
+            : "🚫 Ignored Devices"
 
-            def ignoredSectionTitle = ignoredCount > 0
-                ? "🚫 Ignored Devices — <span style='color:blue;'>${ignoredCount} ignored</span>"
-                : "🚫 Ignored Devices"
+        section("<span style='font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8;'>Configuration</span>") {
             href(name: "toIgnoredDevices", page: "ignoredDevicesPage",
                  title: ignoredSectionTitle,
                  description: ignoredCount > 0
                      ? "${ignoredCount} device(s) ignored — excluded from all reports, notifications, and the web portal. Removing a device resets its history and logs a Restored entry."
-                     : "No devices ignored — add devices to exclude them from all reports, notifications, stale checks, health scoring, and the web portal.")
-
-            paragraph "<div style='border-top:1px solid #f0f0f0; margin:4px 0;'></div>"
+                     : "No devices ignored — excluded from all reports, notifications, stale checks, health scoring, and the web portal.")
+            href(name: "toDetectionSettings", page: "detectionSettingsPage",
+                 title: "🔍 Auto-Detection Settings",
+                 description: "Configure battery level thresholds for replacement detection.")
+            href(name: "toBatteryTypes", page: "batteryTypesPage",
+                 title: "🔋 Battery Types",
+                 description: "Assign battery type and quantity to each monitored device.")
         }
+    }
+}
 
-        section("<b>🔍 Auto-Detection Settings</b>", hideable: true, hidden: true) {
+// ============================================================
+// ===================== DETECTION SETTINGS PAGE =============
+// ============================================================
+def detectionSettingsPage() {
+    dynamicPage(name: "detectionSettingsPage", title: "🔍 Auto-Detection Settings", install: false) {
+        section("") {
             paragraph "Controls what battery level change qualifies as a replacement. " +
-                      "All other safeguards (confirmation, cooldown, minimum samples) run automatically in the background."
+                      "All other safeguards — two-reading confirmation, cooldown, minimum samples — run automatically in the background."
 
             input "detectionOldThreshold", "number",
                   title: "Battery was at or below (%):",
@@ -1551,15 +1561,30 @@ def deviceManagePage(Map params = [:]) {
             paragraph "<span style='color:#94a3b8; font-size:12px;'>ℹ️ A minimum jump of 25% is always enforced in the background regardless of the values above. " +
                       "Pending detections awaiting confirmation are visible in debug logs.</span>"
         }
+    }
+}
 
-        // ── Battery Types ────────────────────────────────────────────────────
+// ============================================================
+// ===================== BATTERY TYPES PAGE ==================
+// ============================================================
+def batteryTypesPage() {
+    def devList = (autoDevices ?: []).sort { a, b -> a.displayName.trim() <=> b.displayName.trim() }
+
+    def typeOptions = ["": "— Not Set —"]
+    typeOptions["_sep1"] = "──────── Standard ────────"
+    ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each { typeOptions[it] = it }
+    typeOptions["_sep2"] = "──────── Rechargeable ────────"
+    ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each { typeOptions[it] = it }
+    typeOptions["_sep3"] = "──────── Other ────────"
+    typeOptions["Other"] = "Other"
+
+    dynamicPage(name: "batteryTypesPage", title: "🔋 Battery Types", install: false) {
         section("") {
-            paragraph "<div style='border-bottom:2px solid #e0e0e0; margin-bottom:8px;'></div>"
             paragraph "Assign a battery type and quantity to each device so Battery Monitor can include battery type in notifications and replacement history. " +
                       "This helps you know exactly what to buy when a replacement is needed.<br><br>" +
                       "Set the type and count for as many devices as you like, then tap <b>Done</b> to save."
         }
-        section("<b>Battery Types</b>", hideable: true, hidden: true) {
+        section("") {
             devList.each { dev ->
                 def currentType  = settings["battType_${dev.id}"] ?: ""
                 def currentCount = settings["battCount_${dev.id}"] ?: 1
