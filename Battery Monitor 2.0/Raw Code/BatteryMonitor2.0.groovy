@@ -1505,7 +1505,7 @@ def deviceManagePage(Map params = [:]) {
     dynamicPage(name: "deviceManagePage", title: "🔋 Device Battery Management", install: false) {
 
         // ── Actions ─────────────────────────────────────────────────────────
-        section("<span style='font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8;'>Actions</span>") {
+        section("<span style='display:inline-block; background:#e8f0fe; color:#1a73e8; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; padding:3px 12px; border-radius:20px;'>Actions</span>") {
             href(name: "toDeviceActions", page: "deviceActionsPage",
                  title: "⚙️ Device Actions",
                  description: "Log a replacement, reset drain history, change battery type, or view history for a single device. Last selected device is remembered.")
@@ -1519,7 +1519,7 @@ def deviceManagePage(Map params = [:]) {
             ? "🚫 Ignored Devices — <span style='color:blue;'>${ignoredCount} ignored</span>"
             : "🚫 Ignored Devices"
 
-        section("<span style='font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8;'>Configuration</span>") {
+        section("<span style='display:inline-block; background:#e8f0fe; color:#1a73e8; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; padding:3px 12px; border-radius:20px;'>Configuration</span>") {
             href(name: "toIgnoredDevices", page: "ignoredDevicesPage",
                  title: ignoredSectionTitle,
                  description: ignoredCount > 0
@@ -2445,4 +2445,3 @@ def infoPage(Map params = [:]) {
         }
     }
 }
-
