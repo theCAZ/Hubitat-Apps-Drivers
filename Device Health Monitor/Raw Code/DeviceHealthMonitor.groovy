@@ -1,6 +1,6 @@
 /**
  * Device Health Monitor
- * Version: 1.5.2
+ * Version: 1.5.3
  *
  * Author: jdthomas24
  */
@@ -14,7 +14,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.5.2",
+    version: "1.5.3",
     doNotFocus: true,
     oauth: true
 )
@@ -462,7 +462,7 @@ def getStateVerified(deviceId) {
         def data = state.history?.get(deviceId as String)
         if (!data?.lastSeen) return false
         def stateChangedAfterLastSeen = (tracked.lastChanged as Long) > (data.lastSeen as Long)
-        def thresholdMs = ((settings?.offlineThresholdHours ?: 168) * 60 * 60 * 1000 * 0.75).toLong()
+        def thresholdMs = ((settings?.offlineThresholdHours ?: 168) * 60 * 60 * 1000 * 1.0).toLong()  // v1.5.3: extended to full window
         def stateChangeIsRecent = (now() - (tracked.lastChanged as Long)) < thresholdMs
         return stateChangedAfterLastSeen && stateChangeIsRecent
     } catch (e) {
@@ -1229,7 +1229,7 @@ def mainPage() {
             input "debugMode", "bool",
                   title: "Debug Logging (auto-disables after 30 min)",
                   defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.2</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.3</span>"
         }
     }
 }
@@ -1743,7 +1743,7 @@ def processScanChunk() {
                             recordSample = elapsed <= (intervalMinutes * 1.5)
                         }
                         if (recordSample) {
-                            def alpha      = 0.3
+                            def alpha      = 0.15
                             def prevSmooth = (data.samples && data.samples.size() > 0) ? data.samples[-1] : elapsed
                             def smoothed   = alpha * elapsed + (1 - alpha) * prevSmooth
                             data.samples << smoothed
@@ -1802,15 +1802,65 @@ def updateHealth(device) {
     if (minutesSinceLastSeen >= offlineThreshold) {
         state.health[id] = "Offline"
     } else {
-        def baseline = (data.userInterval ?: data.avgInterval ?: 60).toDouble()
-        def ratio    = minutesSinceLastSeen / baseline
-        if      (ratio <= 1.2) state.health[id] = "Excellent"
-        else if (ratio <= 2.0) state.health[id] = "Good"
-        else if (ratio <= 3.0) state.health[id] = "Fair"
+        // v1.5.3: Protocol-aware minimum baseline floor
+        // Prevents burst-usage devices (Apple TV, media players, LAN devices) from
+        // learning an unrealistically short baseline during active periods and then
+        // falsely scoring Poor when they go quiet. Zigbee/Z-Wave floors stay tight
+        // so real mesh failures are still caught quickly.
+        def protocol    = getProtocol(device)
+        def minBaseline = 30.0  // default — Zigbee / Z-Wave (30 min)
+        switch (protocol) {
+            case "LAN":
+            case "Hub Mesh":
+            case "Hub Mesh (Zigbee)":
+            case "Hub Mesh (Z-Wave)":
+            case "Hub Mesh (Matter)":
+                minBaseline = 480.0    // 8 hours — LAN/media devices
+                break
+            case "Matter":
+                minBaseline = 120.0    // 2 hours
+                break
+            case "Virtual":
+            case "Hub Variable":
+                minBaseline = 1440.0   // 24 hours
+                break
+        }
+        def baseline = Math.max(
+            (data.userInterval ?: data.avgInterval ?: 60).toDouble(),
+            minBaseline
+        )
+        // v1.5.3: Loosened thresholds — give burst-use devices (locks, lights,
+        // switches, media devices, door sensors) real breathing room before
+        // notifications fire. Devices need to go truly quiet before reaching Poor.
+        def ratio = minutesSinceLastSeen / baseline
+        if      (ratio <= 1.5) state.health[id] = "Excellent"
+        else if (ratio <= 3.0) state.health[id] = "Good"
+        else if (ratio <= 6.0) state.health[id] = "Fair"
         else                   state.health[id] = "Poor"
     }
 
     def currentHealth = state.health[id]
+
+    // v1.5.3: Pingable hold-at-Fair gate
+    // When a device would enter Poor for the first time and supports refresh/ping,
+    // hold it at Fair for one scan cycle while a verification ping is sent.
+    // If it responds → recovers automatically, never reaches Poor or fires a notification.
+    // If it doesn't respond → next scan confirms it as genuinely Poor.
+    if (currentHealth == "Poor") {
+        def prevH = state.prevHealth?.get(id as String)
+        if (prevH != "Poor" && prevH != "Offline") {
+            def capChk     = state.deviceCapabilities?.get(id as String) ?: [:]
+            def isPingable = capChk.pingWorks == true ||
+                             capChk.declared  == true ||
+                             isHueDevice(device) ||
+                             isKonnectedDevice(device)
+            if (isPingable) {
+                state.health[id] = "Fair"
+                currentHealth    = "Fair"
+                if (debugEnabled()) log.debug "${device.displayName}: first Poor entry — holding at Fair pending verification ping"
+            }
+        }
+    }
 
     def prevHealth = state.prevHealth?.get(id as String)
     if (currentHealth in ["Poor", "Offline"] && !(prevHealth in ["Poor", "Offline"])) {
@@ -3237,10 +3287,10 @@ def infoPage(Map params = [:]) {
                       "<div style='overflow-x:auto;'><table style='width:100%; border-collapse: collapse;'>" +
                       "<tr style='font-weight:bold;'><td style='padding:4px 8px;'>Health</td><td style='padding:4px 8px;'>Meaning</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>⏳ Pending (n/3 samples)</td><td style='padding:4px 8px;'>Learning — sample count shown inline until 3 are collected</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🟢 Excellent</td><td style='padding:4px 8px;'>Checking in within 1.2× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🟢 Good</td><td style='padding:4px 8px;'>Checking in within 2× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🟠 Fair</td><td style='padding:4px 8px;'>Checking in within 3× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🔴 Poor</td><td style='padding:4px 8px;'>Checking in beyond 3× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>🟢 Excellent</td><td style='padding:4px 8px;'>Checking in within 1.5× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>🟢 Good</td><td style='padding:4px 8px;'>Checking in within 3× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>🟠 Fair</td><td style='padding:4px 8px;'>Checking in within 6× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>🔴 Poor</td><td style='padding:4px 8px;'>Checking in beyond 6× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>💀 Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity unverifiable devices are capped at Poor.</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>😴 Snoozed</td><td style='padding:4px 8px;'>Excluded from notifications for a set duration</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>ℹ️ Low Activity</td><td style='padding:4px 8px;'>Monitored 7+ days with fewer than 3 samples — infrequently used device</td></tr>" +
@@ -3259,9 +3309,10 @@ def infoPage(Map params = [:]) {
         section("<b>🔄 Verification (Ping / Refresh / State)</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
                       "When a device first enters Poor or Offline the app attempts to verify it is still reachable:<br><br>" +
-                      "<b>1. State-change verification:</b> If the device fired a state change event after its last recorded check-in and within 75% of the offline threshold, " +
+                      "<b>1. State-change verification:</b> If the device fired a state change event after its last recorded check-in and within the full offline threshold window, " +
                       "it is considered ✅ State verified — alive without needing a ping.<br><br>" +
                       "<b>2. Refresh / Ping:</b> If state-change verification is not available, the app sends refresh() or ping() to the device.<br><br>" +
+                      "<b>Pingable hold-at-Fair (v1.5.3):</b> When a device enters Poor for the first time and supports refresh or ping, it is held at Fair for one scan cycle while a verification ping is sent. If the device responds it recovers automatically without ever reaching Poor. Only devices that fail to respond are promoted to Poor.<br><br>" +
                       "<b>Auto-reset on recovery (v1.5.2):</b> When a device recovers from Poor or Offline back to Good or Excellent, its verification status is automatically reset. " +
                       "This means devices are never permanently stuck as Unverifiable — they always get a fresh attempt next time they drop. " +
                       "Particularly useful for seasonal or sporadic devices that go quiet for extended periods.<br><br>" +
