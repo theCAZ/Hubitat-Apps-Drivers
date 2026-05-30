@@ -1,6 +1,6 @@
 /**
  * Device Health Monitor
- * Version: 1.5.3
+ * Version: 1.5.4
  *
  * Author: jdthomas24
  */
@@ -14,7 +14,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.5.3",
+    version: "1.5.4",
     doNotFocus: true,
     oauth: true
 )
@@ -85,12 +85,17 @@ def initialize() {
     if (state.snoozed       == null) state.snoozed       = [:]
     if (state.verifying     == null) state.verifying     = [:]
     if (state.stateHistory  == null) state.stateHistory  = [:]
-    if (state.scanQueue     == null) state.scanQueue     = []
-    if (state.tempResults   == null) state.tempResults   = []
-    if (state.isScanning         == null) state.isScanning         = false
+    // Always reset scan state on initialize — if the hub rebooted mid-scan,
+    // isScanning and scanStartTime persist in state and would trigger the
+    // stuck-scan watchdog on every subsequent scan until manually cleared.
+    state.isScanning    = false
+    state.scanStartTime = null
+    state.scanQueue     = []
+    state.tempResults   = []
     if (state.deviceCapabilities  == null) state.deviceCapabilities  = [:]
     if (state.deepScanResult      == null) state.deepScanResult      = [:]
     if (state.dropHistory         == null) state.dropHistory         = [:]
+    if (state.fairHold            == null) state.fairHold            = [:]
 
     if (!state.capabilitiesResetDone) {
         state.deviceCapabilities  = [:]
@@ -1229,7 +1234,7 @@ def mainPage() {
             input "debugMode", "bool",
                   title: "Debug Logging (auto-disables after 30 min)",
                   defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.3</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.4</span>"
         }
     }
 }
@@ -1611,7 +1616,7 @@ def scanAllDevices() {
 def purgeOrphanedState(devList) {
     def activeIds = devList.collect { it.id as String } as Set
 
-    ["history", "health", "verifying", "stateHistory"].each { stateKey ->
+    ["history", "health", "verifying", "stateHistory", "fairHold"].each { stateKey ->
         def map = state[stateKey]
         if (map instanceof Map) {
             def stale = map.keySet().findAll { !(it in activeIds) }
@@ -1843,9 +1848,10 @@ def updateHealth(device) {
 
     // v1.5.3: Pingable hold-at-Fair gate
     // When a device would enter Poor for the first time and supports refresh/ping,
-    // hold it at Fair for one scan cycle while a verification ping is sent.
-    // If it responds → recovers automatically, never reaches Poor or fires a notification.
-    // If it doesn't respond → next scan confirms it as genuinely Poor.
+    // hold it at Fair for ONE scan cycle while a verification ping is sent.
+    // A fairHold flag is stored so the gate only fires once per drop event —
+    // on the next scan the device is allowed through to Poor if still quiet.
+    // If it responds before then → recovers on its own, never reaches Poor.
     if (currentHealth == "Poor") {
         def prevH = state.prevHealth?.get(id as String)
         if (prevH != "Poor" && prevH != "Offline") {
@@ -1854,12 +1860,32 @@ def updateHealth(device) {
                              capChk.declared  == true ||
                              isHueDevice(device) ||
                              isKonnectedDevice(device)
-            if (isPingable) {
+            // Only hold if we haven't already held this drop cycle
+            def fairHolds  = state.fairHold ?: [:]
+            def alreadyHeld = fairHolds[id as String] == true
+            if (isPingable && !alreadyHeld) {
                 state.health[id] = "Fair"
                 currentHealth    = "Fair"
-                if (debugEnabled()) log.debug "${device.displayName}: first Poor entry — holding at Fair pending verification ping"
+                if (!state.fairHold) state.fairHold = [:]
+                state.fairHold[id as String] = true
+                state.fairHold = state.fairHold
+                if (debugEnabled()) log.debug "${device.displayName}: first Poor entry — holding at Fair for one scan pending verification ping"
+            } else if (alreadyHeld) {
+                // Hold already used — clear it and let Poor through
+                def fh = state.fairHold ?: [:]
+                fh.remove(id as String)
+                state.fairHold = fh
+                if (debugEnabled()) log.debug "${device.displayName}: fairHold expired — promoting to Poor"
             }
+        } else {
+            // Device was already Poor/Offline — clear any stale fairHold
+            def fh = state.fairHold ?: [:]
+            if (fh.containsKey(id as String)) { fh.remove(id as String); state.fairHold = fh }
         }
+    } else if (currentHealth in ["Good", "Excellent", "Pending"]) {
+        // Device recovered — clear fairHold so next drop gets a fresh hold cycle
+        def fh = state.fairHold ?: [:]
+        if (fh.containsKey(id as String)) { fh.remove(id as String); state.fairHold = fh }
     }
 
     def prevHealth = state.prevHealth?.get(id as String)
@@ -3308,14 +3334,11 @@ def infoPage(Map params = [:]) {
 
         section("<b>🔄 Verification (Ping / Refresh / State)</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "When a device first enters Poor or Offline the app attempts to verify it is still reachable:<br><br>" +
-                      "<b>1. State-change verification:</b> If the device fired a state change event after its last recorded check-in and within the full offline threshold window, " +
-                      "it is considered ✅ State verified — alive without needing a ping.<br><br>" +
-                      "<b>2. Refresh / Ping:</b> If state-change verification is not available, the app sends refresh() or ping() to the device.<br><br>" +
-                      "<b>Pingable hold-at-Fair (v1.5.3):</b> When a device enters Poor for the first time and supports refresh or ping, it is held at Fair for one scan cycle while a verification ping is sent. If the device responds it recovers automatically without ever reaching Poor. Only devices that fail to respond are promoted to Poor.<br><br>" +
-                      "<b>Auto-reset on recovery (v1.5.2):</b> When a device recovers from Poor or Offline back to Good or Excellent, its verification status is automatically reset. " +
-                      "This means devices are never permanently stuck as Unverifiable — they always get a fresh attempt next time they drop. " +
-                      "Particularly useful for seasonal or sporadic devices that go quiet for extended periods.<br><br>" +
+                      "When a device enters Poor or Offline the app attempts to confirm it is still reachable before firing a notification.<br><br>" +
+                      "<b>Step 1 — State-change check:</b> If the device fired any state change event after its last recorded check-in and within the offline threshold window, it is marked ✅ State verified — no ping needed.<br><br>" +
+                      "<b>Step 2 — Refresh / Ping:</b> If no recent state change is found, the app sends refresh() or ping() to the device directly.<br><br>" +
+                      "<b>Hold-at-Fair:</b> When a pingable device enters Poor for the first time, it is held at Fair for one scan cycle while the ping is sent. If it responds it recovers on its own without ever reaching Poor. If it doesn't respond it is confirmed Poor on the next scan.<br><br>" +
+                      "<b>Auto-reset on recovery:</b> When a device recovers from Poor or Offline back to Good or Excellent, its verification status is automatically reset so it always gets a fresh attempt next time it drops.<br><br>" +
                       "<b>Hue devices:</b> Add your Hue Bridge to monitored devices — the app refreshes the Bridge when any Hue device goes Poor or Offline.<br><br>" +
                       "<b>Konnected devices:</b> Add your Konnected Alarm Panel to monitored devices — child sensors are verified by refreshing the panel.</div>"
         }
