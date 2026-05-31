@@ -7,7 +7,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
     iconUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Tests%20-%20Groovy%20RAW/Battery%20Monitor%202.0%20BETA%20Tests",
     iconX2Url: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
-    version: "2.5.28",
+    version: "2.5.29",
     doNotFocus: true,
     oauth: true
 )
@@ -56,7 +56,6 @@ def updated() {
         if (pruned > 0 && debugMode) log.debug "Purged ${pruned} orphaned replacement history entr${pruned == 1 ? 'y' : 'ies'}"
     }
 
-    // Prune pendingReplacement entries for devices no longer monitored
     if (state.pendingReplacement) {
         def pendingBefore = state.pendingReplacement.size()
         state.pendingReplacement = state.pendingReplacement.findAll { id, _ ->
@@ -377,7 +376,7 @@ def mainPage() {
 
         section("<b>Diagnostics</b>") {
             input "debugMode", "bool", title: "Debug Logging (auto-disables after 30 min)", defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.5.27</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.5.29</span>"
         }
     }
 }
@@ -762,16 +761,12 @@ def detectReplacement(device, newLevel, oldLevel) {
 
     def data = state.history[device.id]
 
-    // ── Gate 1: require at least 3 prior drain samples (hardcoded) ────────────
-    //   Prevents triggering on a newly-added device that starts at 95%+.
     def sampleCount = data?.samples?.size() ?: 0
     if (sampleCount < 3) {
         if (debugMode) log.debug "${device.displayName}: replacement gate — only ${sampleCount}/3 prior samples, skipping"
         return
     }
 
-    // ── Gate 2: device must be at least 3 days old (hardcoded) ──────────────
-    //   Protects against false positives on freshly-added devices.
     def firstSeen = data?.firstSeenDate ?: data?.lastDate ?: now()
     def ageDays   = (now() - (firstSeen as Long)) / (1000 * 60 * 60 * 24)
     if (ageDays < 3) {
@@ -779,8 +774,6 @@ def detectReplacement(device, newLevel, oldLevel) {
         return
     }
 
-    // ── Gate 3: 12h cooldown after last replacement (hardcoded) ─────────────
-    //   Prevents back-to-back duplicate detections.
     def lastLogged = data?.lastReplacementLogged
     if (lastLogged) {
         def hoursSinceLast = (now() - (lastLogged as Long)) / (1000 * 60 * 60)
@@ -790,28 +783,21 @@ def detectReplacement(device, newLevel, oldLevel) {
         }
     }
 
-    // ── Configurable thresholds + implicit jump floor ────────────────────────
-    //   Minimum jump is derived from the threshold gap, floored at 25%
-    //   so misconfigured thresholds can never allow trivially small jumps.
-    def oldThresh = (settings?.detectionOldThreshold ?: 40).toInteger()
-    def newThresh = (settings?.detectionNewThreshold ?: 90).toInteger()
-    def minJump   = Math.max(25, newThresh - oldThresh)
+    // v2.5.29: Simplified detection — any upward jump of minJump% or more qualifies.
+    // Batteries only drain naturally; any significant upward jump means a new battery was installed.
+    def minJump   = (settings?.detectionMinJump ?: 30).toInteger()
     def largeJump = newLevel - oldLevel
 
-    // ── Primary detection condition ──────────────────────────────────────────
-    def qualifies = (oldLevel <= oldThresh && newLevel >= newThresh && largeJump >= minJump)
+    def qualifies = (largeJump >= minJump)
     if (!qualifies) {
         if (state.pendingReplacement?.containsKey(device.id)) {
-            if (debugMode) log.debug "${device.displayName}: pending replacement cleared — reading no longer qualifies (${oldLevel}% → ${newLevel}%)"
+            if (debugMode) log.debug "${device.displayName}: pending replacement cleared — jump ${largeJump}% < threshold ${minJump}% (${oldLevel}% → ${newLevel}%)"
             state.pendingReplacement.remove(device.id)
             state.pendingReplacement = state.pendingReplacement
         }
         return
     }
 
-    // ── Gate 4: two-reading confirmation (hardcoded ON, 48h window) ─────────
-    //   First qualifying read stages a pending entry.
-    //   Second qualifying read within 48h confirms and logs.
     def requireConfirm   = true
     def confirmWindowHrs = 48
 
@@ -846,17 +832,15 @@ def detectReplacement(device, newLevel, oldLevel) {
         return
     }
 
-    // ── Gate 5: sustained level check ───────────────────────────────────────
-    //   Level must still be ≥ newThresh on the confirming read.
-    //   If it dropped back down the original read was likely spurious.
-    if (newLevel < newThresh) {
-        if (debugMode) log.debug "${device.displayName}: pending replacement cancelled — level dropped back to ${newLevel}% (threshold ${newThresh}%)"
+    // Gate 5: level must still be above (pre-jump level + minJump) on confirming read
+    def sustainThresh = (pending.oldLevel as Integer) + minJump
+    if (newLevel < sustainThresh) {
+        if (debugMode) log.debug "${device.displayName}: pending replacement cancelled — level dropped back to ${newLevel}% (must sustain ≥${sustainThresh}%)"
         state.pendingReplacement.remove(device.id)
         state.pendingReplacement = state.pendingReplacement
         return
     }
 
-    // All gates passed — confirmed
     state.pendingReplacement.remove(device.id)
     state.pendingReplacement = state.pendingReplacement
     data.zeroCount = 0
@@ -870,9 +854,9 @@ def detectReplacement(device, newLevel, oldLevel) {
 def confirmPendingReplacements() {
     if (!state.pendingReplacement || state.pendingReplacement.isEmpty()) return
 
-    def newThresh = (settings?.detectionNewThreshold ?: 90).toInteger()
-    def windowMs  = 48 * 60 * 60 * 1000  // 48h hardcoded confirmation window
-    def toRemove         = []
+    def minJump  = (settings?.detectionMinJump ?: 30).toInteger()
+    def windowMs = 48 * 60 * 60 * 1000
+    def toRemove = []
 
     state.pendingReplacement.each { deviceId, pending ->
         def device = autoDevices?.find { it.id == deviceId }
@@ -881,7 +865,8 @@ def confirmPendingReplacements() {
         def currentLevel = device.currentValue("battery")?.toInteger()
         if (currentLevel == null) return
 
-        def pendingAge = now() - (pending.stagedAt as Long)
+        def pendingAge    = now() - (pending.stagedAt as Long)
+        def sustainThresh = (pending.oldLevel as Integer) + minJump
 
         if (pendingAge > windowMs) {
             if (debugMode) log.debug "${device.displayName}: pending replacement EXPIRED during scan (${(pendingAge / 3600000).toInteger()}h old)"
@@ -889,14 +874,14 @@ def confirmPendingReplacements() {
             return
         }
 
-        if (currentLevel >= newThresh) {
+        if (currentLevel >= sustainThresh) {
             def histData = state.history[device.id]
             if (histData) histData.zeroCount = 0
             logReplacement(device, currentLevel, false)
             toRemove << deviceId
-            if (debugMode) log.debug "${device.displayName}: replacement CONFIRMED by scan — level ${currentLevel}% still ≥ ${newThresh}%"
+            if (debugMode) log.debug "${device.displayName}: replacement CONFIRMED by scan — level ${currentLevel}% sustained ≥${sustainThresh}%"
         } else {
-            if (debugMode) log.debug "${device.displayName}: pending replacement DISCARDED by scan — level dropped to ${currentLevel}% (below ${newThresh}%)"
+            if (debugMode) log.debug "${device.displayName}: pending replacement DISCARDED by scan — level ${currentLevel}% dropped below sustain threshold ${sustainThresh}%"
             toRemove << deviceId
         }
     }
@@ -1176,7 +1161,7 @@ def logReplacement(device, newLevel, manual = false) {
         deviceId: device.id,
         device:   device.displayName,
         level:    newLevel,
-        date:     new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
+        date:     new Date().format("MM/dd/yyyy", location.timeZone),
         type:     manual ? "manual" : "auto"
     ]
     state.replacements = state.replacements.sort { a, b -> b.date <=> a.date }
@@ -1314,7 +1299,7 @@ tr:hover td{background:#1a1a1a}
         }
 
         html.append("</tbody></table>")
-        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.5.27 &nbsp;·&nbsp; jdthomas24</p>")
+        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.5.29 &nbsp;·&nbsp; jdthomas24</p>")
         html.append("</div></body></html>")
 
         return render(contentType: "text/html", data: html.toString(), status: 200)
@@ -1497,6 +1482,7 @@ def deviceManagePage(Map params = [:]) {
     def typeOptions = ["": "— Not Set —"]
     typeOptions["_sep1"] = "──────── Standard ────────"
     ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each { typeOptions[it] = it }
+    typeOptions["Integrated"] = "Integrated"
     typeOptions["_sep2"] = "──────── Rechargeable ────────"
     ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each { typeOptions[it] = it }
     typeOptions["_sep3"] = "──────── Other ────────"
@@ -1504,32 +1490,30 @@ def deviceManagePage(Map params = [:]) {
 
     dynamicPage(name: "deviceManagePage", title: "🔋 Device Battery Management", install: false) {
 
-        // ── Actions ─────────────────────────────────────────────────────────
-        section("<span style='font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8;'>Actions</span>") {
+        section("<span style='display:inline-block; background:#e8f0fe; color:#1a73e8; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; padding:3px 12px; border-radius:20px;'>Actions</span>") {
             href(name: "toDeviceActions", page: "deviceActionsPage",
-                 title: "⚙️ Device Actions",
+                 title: "<b>⚙️ Device Actions</b>",
                  description: "Log a replacement, reset drain history, change battery type, or view history for a single device. Last selected device is remembered.")
             href(name: "toBulkActions", page: "bulkActionsPage",
-                 title: "📦 Bulk Actions",
+                 title: "<b>📦 Bulk Actions</b>",
                  description: "Log replacements or reset drain history across multiple devices at once. Useful when swapping batteries in several devices at the same time.")
         }
 
-        // ── Configuration ────────────────────────────────────────────────────
         def ignoredSectionTitle = ignoredCount > 0
-            ? "🚫 Ignored Devices — <span style='color:blue;'>${ignoredCount} ignored</span>"
-            : "🚫 Ignored Devices"
+            ? "<b>🚫 Ignored Devices</b> — <span style='color:blue;'>${ignoredCount} ignored</span>"
+            : "<b>🚫 Ignored Devices</b>"
 
-        section("<span style='font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8;'>Configuration</span>") {
+        section("<span style='display:inline-block; background:#e8f0fe; color:#1a73e8; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; padding:3px 12px; border-radius:20px;'>Configuration</span>") {
             href(name: "toIgnoredDevices", page: "ignoredDevicesPage",
                  title: ignoredSectionTitle,
                  description: ignoredCount > 0
                      ? "${ignoredCount} device(s) ignored — excluded from all reports, notifications, and the web portal. Removing a device resets its history and logs a Restored entry."
                      : "No devices ignored — excluded from all reports, notifications, stale checks, health scoring, and the web portal.")
             href(name: "toDetectionSettings", page: "detectionSettingsPage",
-                 title: "🔍 Auto-Detection Settings",
+                 title: "<b>🔍 Auto-Detection Settings</b>",
                  description: "Configure battery level thresholds for replacement detection.")
             href(name: "toBatteryTypes", page: "batteryTypesPage",
-                 title: "🔋 Battery Types",
+                 title: "<b>🔋 Battery Types</b>",
                  description: "Assign battery type and quantity to each monitored device.")
         }
     }
@@ -1541,25 +1525,22 @@ def deviceManagePage(Map params = [:]) {
 def detectionSettingsPage() {
     dynamicPage(name: "detectionSettingsPage", title: "🔍 Auto-Detection Settings", install: false) {
         section("") {
-            paragraph "Controls what battery level change qualifies as a replacement. " +
-                      "All other safeguards — two-reading confirmation, cooldown, minimum samples — run automatically in the background."
+            paragraph "<div style='background-color:#e8f0fe; border-left:4px solid #1a73e8; border-radius:4px; padding:10px 12px; margin-bottom:8px;'>" +
+                      "Batteries only drain — any significant upward jump in level means a new battery was installed. " +
+                      "Battery Monitor detects this automatically across two consecutive readings." +
+                      "</div>"
 
-            input "detectionOldThreshold", "number",
-                  title: "Battery was at or below (%):",
-                  description: "The battery must have been this low before the jump was detected. Default: 40",
-                  defaultValue: 40,
-                  range: "10..60",
+            input "detectionMinJump", "number",
+                  title: "<b>Minimum upward jump % to detect a replacement:</b>",
+                  description: "Default: 30. Any upward jump of this size or more across two readings will be logged as a replacement.",
+                  defaultValue: 30,
+                  range: "15..60",
                   required: false
 
-            input "detectionNewThreshold", "number",
-                  title: "Battery jumped to at or above (%):",
-                  description: "The battery must reach at least this level for a replacement to be detected. Default: 90",
-                  defaultValue: 90,
-                  range: "70..100",
-                  required: false
-
-            paragraph "<span style='color:#94a3b8; font-size:12px;'>ℹ️ A minimum jump of 25% is always enforced in the background regardless of the values above. " +
-                      "Pending detections awaiting confirmation are visible in debug logs.</span>"
+            paragraph "<div style='background-color:#fff3cd; border-left:3px solid #ffc107; border-radius:0 4px 4px 0; padding:8px 12px; margin-top:8px;'>" +
+                      "<span style='color:#856404; font-size:12px;'>⚠️ Set too low (under 20%) risks false positives on noisy devices. 30% works well for most setups. " +
+                      "Manual logging is still available in Device Actions for edge cases.</span>" +
+                      "</div>"
         }
     }
 }
@@ -1573,10 +1554,22 @@ def batteryTypesPage() {
     def typeOptions = ["": "— Not Set —"]
     typeOptions["_sep1"] = "──────── Standard ────────"
     ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each { typeOptions[it] = it }
+    typeOptions["Integrated"] = "Integrated"
     typeOptions["_sep2"] = "──────── Rechargeable ────────"
     ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each { typeOptions[it] = it }
     typeOptions["_sep3"] = "──────── Other ────────"
     typeOptions["Other"] = "Other"
+
+    // v2.5.29: Split into two sections — unassigned first, assigned collapsed
+    // Fix: "Other" without custom text entered counts as unassigned
+    def unassigned = devList.findAll { dev ->
+        def t = settings["battType_${dev.id}"] ?: ""
+        !t || t.startsWith("_sep") || (t == "Other" && !(settings["battCustomType_${dev.id}"]?.trim()))
+    }
+    def assigned = devList.findAll { dev ->
+        def t = settings["battType_${dev.id}"] ?: ""
+        t && !t.startsWith("_sep") && !(t == "Other" && !(settings["battCustomType_${dev.id}"]?.trim()))
+    }
 
     dynamicPage(name: "batteryTypesPage", title: "🔋 Battery Types", install: false) {
         section("") {
@@ -1584,38 +1577,117 @@ def batteryTypesPage() {
                       "This helps you know exactly what to buy when a replacement is needed.<br><br>" +
                       "Set the type and count for as many devices as you like, then tap <b>Done</b> to save."
         }
-        section("") {
-            devList.each { dev ->
-                def currentType  = settings["battType_${dev.id}"] ?: ""
-                def currentCount = settings["battCount_${dev.id}"] ?: 1
-                def currentInfo  = getCatalogBatteryInfo(dev)
-                def levelStr     = ""
-                try {
-                    def lvl  = dev.currentValue("battery")
-                    levelStr = (lvl != null) ? " ${lvl}%" : " —"
-                } catch (e) { levelStr = " —" }
-                def infoStr     = currentInfo ?: "Not set"
-                def deviceTitle = "<b>${dev.displayName}</b> <span style='color:#1a73e8; font-size:12px;'>${levelStr} · ${infoStr}</span>"
-                input "battType_${dev.id}", "enum",
-                      title: deviceTitle,
-                      options: typeOptions,
-                      required: false,
-                      defaultValue: currentType,
-                      width: 8
-                if (settings["battType_${dev.id}"] == "Other") {
-                    input "battCustomType_${dev.id}", "text",
-                          title: "Custom type:",
-                          description: "e.g. CR17450, 4SR44",
-                          required: false,
-                          defaultValue: settings["battCustomType_${dev.id}"] ?: "",
-                          width: 8
+
+        def unassignedTitle = unassigned.size() > 0
+            ? "🔋 Not Yet Assigned — <span style='color:red;'>${unassigned.size()} device(s)</span>"
+            : "🔋 Not Yet Assigned — <span style='color:#22c55e;'>✅ All assigned</span>"
+
+        section(unassignedTitle, hideable: true, hidden: unassigned.size() == 0) {
+            if (!unassigned) {
+                paragraph "✅ All devices have a battery type assigned."
+            } else {
+                unassigned.each { dev ->
+                    def currentCount = settings["battCount_${dev.id}"] ?: 1
+                    def isOther = settings["battType_${dev.id}"] == "Other"
+                    def levelStr = ""
+                    try {
+                        def lvl = dev.currentValue("battery")
+                        levelStr = (lvl != null) ? " ${lvl}%" : " —"
+                    } catch (e) { levelStr = " —" }
+                    def deviceTitle = "<b>${dev.displayName}</b> <span style='color:#1a73e8; font-size:12px;'>${levelStr} · Not set</span>"
+                    // Two-column layout: type=5, qty=1 per device, two devices per row (5+1+5+1=12)
+                    // When Other is selected, drop to full-width for that device to fit the custom text field
+                    if (isOther) {
+                        input "battType_${dev.id}", "enum",
+                              title: deviceTitle,
+                              options: typeOptions,
+                              required: false,
+                              defaultValue: "",
+                              submitOnChange: true,
+                              width: 7
+                        input "battCustomType_${dev.id}", "text",
+                              title: "Custom type:",
+                              description: "e.g. CR17450, 4SR44",
+                              required: false,
+                              defaultValue: settings["battCustomType_${dev.id}"] ?: "",
+                              width: 3
+                        input "battCount_${dev.id}", "number",
+                              title: "Qty:",
+                              defaultValue: currentCount,
+                              required: false,
+                              range: "1..99",
+                              width: 2
+                    } else {
+                        input "battType_${dev.id}", "enum",
+                              title: deviceTitle,
+                              options: typeOptions,
+                              required: false,
+                              defaultValue: "",
+                              submitOnChange: true,
+                              width: 4
+                        input "battCount_${dev.id}", "number",
+                              title: "Qty:",
+                              defaultValue: currentCount,
+                              required: false,
+                              range: "1..99",
+                              width: 2
+                    }
                 }
-                input "battCount_${dev.id}", "number",
-                      title: "Qty:",
-                      defaultValue: currentCount,
-                      required: false,
-                      range: "1..99",
-                      width: 4
+            }
+        }
+
+        section("✅ Assigned — <span style='color:blue;'>${assigned.size()} device(s)</span>", hideable: true, hidden: true) {
+            if (!assigned) {
+                paragraph "No devices assigned yet."
+            } else {
+                assigned.each { dev ->
+                    def currentType  = settings["battType_${dev.id}"] ?: ""
+                    def currentCount = settings["battCount_${dev.id}"] ?: 1
+                    def currentInfo  = getCatalogBatteryInfo(dev)
+                    def isOther      = currentType == "Other"
+                    def levelStr = ""
+                    try {
+                        def lvl = dev.currentValue("battery")
+                        levelStr = (lvl != null) ? " ${lvl}%" : " —"
+                    } catch (e) { levelStr = " —" }
+                    def infoStr     = currentInfo ?: "Not set"
+                    def deviceTitle = "<b>${dev.displayName}</b> <span style='color:#1a73e8; font-size:12px;'>${levelStr} · ${infoStr}</span>"
+                    if (isOther) {
+                        input "battType_${dev.id}", "enum",
+                              title: deviceTitle,
+                              options: typeOptions,
+                              required: false,
+                              defaultValue: currentType,
+                              submitOnChange: true,
+                              width: 7
+                        input "battCustomType_${dev.id}", "text",
+                              title: "Custom type:",
+                              description: "e.g. CR17450, 4SR44",
+                              required: false,
+                              defaultValue: settings["battCustomType_${dev.id}"] ?: "",
+                              width: 3
+                        input "battCount_${dev.id}", "number",
+                              title: "Qty:",
+                              defaultValue: currentCount,
+                              required: false,
+                              range: "1..99",
+                              width: 2
+                    } else {
+                        input "battType_${dev.id}", "enum",
+                              title: deviceTitle,
+                              options: typeOptions,
+                              required: false,
+                              defaultValue: currentType,
+                              submitOnChange: true,
+                              width: 4
+                        input "battCount_${dev.id}", "number",
+                              title: "Qty:",
+                              defaultValue: currentCount,
+                              required: false,
+                              range: "1..99",
+                              width: 2
+                    }
+                }
             }
         }
     }
@@ -1655,7 +1727,7 @@ def ignoredDevicesPage() {
                     deviceId: device.id,
                     device:   device.displayName,
                     level:    level,
-                    date:     new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
+                    date:     new Date().format("MM/dd/yyyy", location.timeZone),
                     type:     "restored"
                 ]
                 state.replacements = state.replacements.sort { a, b -> b.date <=> a.date }
@@ -1893,6 +1965,7 @@ def deviceActionsPage() {
     def typeOptions = ["": "— Not Set —"]
     typeOptions["_sep1"] = "──────── Standard ────────"
     ["AA", "AAA", "CR2", "CR1632", "CR2016", "CR2032", "CR2430", "CR2450", "CR2477", "CR123A", "9V", "ER14250", "LS14250"].each { typeOptions[it] = it }
+    typeOptions["Integrated"] = "Integrated"
     typeOptions["_sep2"] = "──────── Rechargeable ────────"
     ["Rechargeable AA", "Rechargeable AAA", "LIR2016", "LIR2032", "LIR2430", "LIR2450", "18650"].each { typeOptions[it] = it }
     typeOptions["_sep3"] = "──────── Other ────────"
@@ -2427,9 +2500,17 @@ def infoPage(Map params = [:]) {
 
         section("<b>🔄 Force Scan & Replacement Detection</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "Replacement detection fires automatically when a device jumps from ≤40% up to ≥90% with a minimum jump of 15% — requires 3+ prior drain samples and 3+ days of history.<br><br>" +
-                      "By default, a <b>two-reading confirmation</b> is required: the first qualifying read stages a pending entry, and a second qualifying read within 48 hours confirms it. " +
-                      "A single spurious spike will not log a replacement. All thresholds and safeguards are configurable under <b>🔋 Device Battery Management → Auto-Detection Settings</b>.<br><br>" +
+                      "<b>How it works:</b> Batteries only drain naturally — they never recharge on their own. So any significant upward jump in battery level means a new battery was installed. " +
+                      "Battery Monitor watches for these jumps and logs a replacement automatically.<br><br>" +
+                      "<b>Detection rules:</b><br>" +
+                      "• Battery level jumps up by at least the configured minimum (default 30%)<br>" +
+                      "• Jump is confirmed across two consecutive readings within 48 hours<br>" +
+                      "• Device has 3+ prior drain samples and is 3+ days old<br>" +
+                      "• 12-hour cooldown prevents duplicate detections<br><br>" +
+                      "A single spurious spike will not log a replacement — the two-reading confirmation catches noisy devices. " +
+                      "The minimum jump % is configurable under <b>🔋 Device Battery Management → Auto-Detection Settings</b>.<br><br>" +
+                      "<b>Manual logging</b> is still available in Device Actions for edge cases: integrated batteries, " +
+                      "unreliable reporters, or replacements you want to back-date.<br><br>" +
                       "<b>Force Scan</b> reads all battery levels immediately. A new drain sample only records if the level has changed since the last reading.</div>"
         }
 
@@ -2438,7 +2519,7 @@ def infoPage(Map params = [:]) {
                       "• Let new batteries run at least a week before trusting health ratings<br>" +
                       "• Assign battery types in 🔋 Device Battery Management — used in notifications and the portal<br>" +
                       "• After replacing a battery, log it in 🔋 Device Battery Management or use Bulk Actions for multiple devices<br>" +
-                      "• If a replacement isn't auto-detected, log it manually — auto-detection requires a jump from ≤40% to ≥90% with 3+ prior samples<br>" +
+                      "• Auto-detection logs replacements for any upward battery jump ≥ your configured minimum % (default 30%) confirmed across two readings<br>• If a replacement isn't auto-detected, log it manually in Device Actions — useful for integrated batteries or unreliable reporters<br>" +
                       "• Use Ignored Devices for spare or storage devices you don't want to monitor<br>" +
                       "• Use Reset Drain History if a device shows incorrect Heavy Drain after first install<br>" +
                       "• Use Notification Snooze when traveling</div>"
