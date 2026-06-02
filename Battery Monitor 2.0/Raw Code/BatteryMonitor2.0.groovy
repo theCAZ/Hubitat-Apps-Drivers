@@ -7,7 +7,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
     iconUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Tests%20-%20Groovy%20RAW/Battery%20Monitor%202.0%20BETA%20Tests",
     iconX2Url: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor2.0.groovy",
-    version: "2.5.30",
+    version: "2.5.31",
     doNotFocus: true,
     oauth: true
 )
@@ -379,7 +379,7 @@ def mainPage() {
 
         section("<b>Diagnostics</b>") {
             input "debugMode", "bool", title: "Debug Logging (auto-disables after 30 min)", defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.5.30</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Battery Monitor v2.5.31</span>"
         }
     }
 }
@@ -1299,8 +1299,10 @@ tr:hover td{background:#1a1a1a}
             def badgeCls   = dead ? "badge-dead" : h == "Poor" ? "badge-poor" : h == "Fair" ? "badge-fair" : h == "Good" ? "badge-good" : h == "Excellent" ? "badge-excellent" : "badge-pending"
             def badgeLbl   = dead ? "🪫 Dead" : h
             def trendHtml  = showTrend ? " <span style='color:${trendColor};font-size:11px;'>${diverges ? '⚠ ' : ''}${trendLabel}</span>" : ""
-            def healthCell = dead || h == "Pending"
+            def healthCell = dead
                 ? "<span class='badge ${badgeCls}'>${badgeLbl}</span>"
+                : h == "Pending"
+                ? "<span class='badge ${badgeCls}'>${badgeLbl}</span> ${getHealthDisplay(device) ?: ''}"
                 : "<span class='badge ${badgeCls}'>${badgeLbl}</span>${trendHtml}"
 
             def drainStr  = (dead || h == "Pending") ? "—" : "${String.format('%.2f', drain)}%"
@@ -1319,7 +1321,7 @@ tr:hover td{background:#1a1a1a}
         }
 
         html.append("</tbody></table>")
-        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.5.30 &nbsp;·&nbsp; jdthomas24</p>")
+        html.append("<p style='text-align:center;font-size:10px;color:#444;margin-top:20px;'>Battery Monitor v2.5.31 &nbsp;·&nbsp; jdthomas24</p>")
         html.append("</div></body></html>")
 
         return render(contentType: "text/html", data: html.toString(), status: 200)
@@ -1463,7 +1465,8 @@ def summaryPage() {
                 } else if (health(device) == "Pending") {
                     table += "<td style='padding:4px; border:1px solid #ccc; color:#94a3b8;' data-order='9999'>📈</td>"
                     table += "<td style='padding:4px; border:1px solid #ccc; color:#94a3b8;' data-order='9999'>📈</td>"
-                    table += "<td style='padding:4px; border:1px solid #ccc; color:#94a3b8;' data-order='99'>📈</td>"
+                    def pendingDisplay = getHealthDisplay(device) ?: "⏳ Pending"
+                    table += "<td style='padding:4px; border:1px solid #ccc;' data-order='99'>${pendingDisplay}</td>"
                 } else {
                     table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${String.format('%.2f', drain)}'>${String.format('%.2f', drain)}</td>"
                     def estDisplay = est != null ? est.toString() : "—"
