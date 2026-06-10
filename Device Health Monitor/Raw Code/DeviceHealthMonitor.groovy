@@ -1,6 +1,6 @@
 /**
  * Device Health Monitor
- * Version: 1.5.6
+ * Version: 1.5.7
  *
  * Author: jdthomas24
  */
@@ -14,7 +14,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.5.6",
+    version: "1.5.7",
     doNotFocus: true,
     oauth: true
 )
@@ -1244,7 +1244,7 @@ def mainPage() {
             input "debugMode", "bool",
                   title: "Debug Logging (auto-disables after 30 min)",
                   defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.6</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.7</span>"
         }
     }
 }
@@ -1916,15 +1916,33 @@ def updateHealth(device) {
     }
 
     // v1.5.5: Verified devices cannot be Poor or Offline
-    // If a device responded to a refresh/ping it is provably reachable — cap at Fair.
-    // This prevents false Poor/Offline ratings for devices whose getLastActivity()
-    // does not update in response to command-triggered state reports (common in Z-Wave).
+    // v1.5.7: Verification trust expires after offlineThresholdHours.
+    // A stale pingWorks=true (older than the offline threshold) is cleared so
+    // battery-dead or truly offline devices are not permanently masked behind
+    // "Quiet verified reachable". The fairHold gate then gets a fresh cycle to
+    // attempt re-verification before the device escalates to Poor or Offline.
     if (currentHealth in ["Poor", "Offline"]) {
         def capChk = state.deviceCapabilities?.get(id as String) ?: [:]
         if (capChk.pingWorks == true) {
-            state.health[id] = "Fair"
-            currentHealth    = "Fair"
-            if (debugEnabled()) log.debug "${device.displayName}: capped at Fair — device is verified reachable via ping/refresh"
+            def pingAge      = now() - (capChk.lastPingAttempt as Long ?: 0)
+            def maxPingAgeMs = ((settings?.offlineThresholdHours ?: 168) * 3600000L)
+            if (pingAge < maxPingAgeMs) {
+                // Trust still valid — cap at Fair, display as Quiet
+                state.health[id] = "Fair"
+                currentHealth    = "Fair"
+                if (debugEnabled()) log.debug "${device.displayName}: capped at Fair — verified reachable (ping age ${(pingAge/3600000).round(1)}h)"
+            } else {
+                // Trust expired — null out pingWorks so fairHold gets a fresh attempt
+                def capMap  = state.deviceCapabilities ?: [:]
+                def capKey  = id as String
+                def capData = capMap[capKey] ?: [:]
+                capData.pingWorks  = null
+                capData.pingFailed = 0
+                capMap[capKey]     = capData
+                state.deviceCapabilities = capMap
+                if (debugEnabled()) log.debug "${device.displayName}: pingWorks trust expired (${(pingAge/3600000).round(1)}h old) — clearing for fresh verification"
+                // currentHealth stays Poor/Offline — fairHold was already evaluated above
+            }
         }
     }
 
@@ -3364,6 +3382,7 @@ def infoPage(Map params = [:]) {
                       "<tr><td style='padding:4px 8px;'>🟢 Excellent</td><td style='padding:4px 8px;'>Checking in within 1.5× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟢 Good</td><td style='padding:4px 8px;'>Checking in within 3× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟠 Fair</td><td style='padding:4px 8px;'>Checking in within 6× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>🟠 Quiet</td><td style='padding:4px 8px;'>Fair health but verified reachable — device is idle, not unreachable. Verification trust expires after the offline threshold (v1.5.7).</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🔴 Poor</td><td style='padding:4px 8px;'>Checking in beyond 6× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>💀 Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity unverifiable devices are capped at Poor.</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>😴 Snoozed</td><td style='padding:4px 8px;'>Excluded from notifications for a set duration</td></tr>" +
@@ -3386,6 +3405,8 @@ def infoPage(Map params = [:]) {
                       "<b>Step 1 — State-change check:</b> If the device fired any state change event after its last recorded check-in and within the offline threshold window, it is marked ✅ State verified — no ping needed.<br><br>" +
                       "<b>Step 2 — Refresh / Ping:</b> If no recent state change is found, the app sends refresh() or ping() to the device directly.<br><br>" +
                       "<b>Hold-at-Fair:</b> When a pingable device enters Poor for the first time, it is held at Fair for one scan cycle while the ping is sent. If it responds it recovers on its own without ever reaching Poor. If it doesn't respond it is confirmed Poor on the next scan.<br><br>" +
+                      "<b>Quiet (verified reachable):</b> Fair-health devices that have confirmed they respond to ping or refresh are shown as 🟠 Quiet instead of Fair — idle but reachable. Used for Z-Wave and LAN devices whose <code>getLastActivity()</code> does not update reliably after command-triggered state reports.<br><br>" +
+                      "<b>Verification trust expiry (v1.5.7):</b> Quiet/verified status expires after your configured Offline Threshold (default 7 days). If a device goes quiet and the last successful ping is older than this window, trust is cleared and the app re-verifies from scratch — preventing dead battery devices from being permanently masked as Quiet.<br><br>" +
                       "<b>Auto-reset on recovery:</b> When a device recovers from Poor or Offline back to Good or Excellent, its verification status is automatically reset so it always gets a fresh attempt next time it drops.<br><br>" +
                       "<b>Hue devices:</b> Add your Hue Bridge to monitored devices — the app refreshes the Bridge when any Hue device goes Poor or Offline.<br><br>" +
                       "<b>Konnected devices:</b> Add your Konnected Alarm Panel to monitored devices — child sensors are verified by refreshing the panel.</div>"
@@ -3396,10 +3417,24 @@ def infoPage(Map params = [:]) {
                       "• Enable OAuth in App Code to unlock the Web Portal<br>" +
                       "• Scheduled devices (lights, irrigation) self-verify via state changes — no configuration needed<br>" +
                       "• Verification status auto-resets on health recovery — no manual intervention needed for seasonal devices<br>" +
+                      "• Quiet/verified trust expires after the offline threshold — dead battery devices will escalate correctly once trust expires<br>" +
                       "• Low activity devices that cannot be verified will show Poor instead of Offline — this is intentional<br>" +
                       "• Assign locations in the 🏷️ Location Assignment page — enables room grouping in the portal<br>" +
                       "• Add your Hue Bridge or CoCoHue Bridge to monitored devices for Hue verification support<br>" +
                       "• After updating the app, run Force Scan to immediately update all health scores</div>"
+        }
+
+        section("<b>📋 Version History</b>", hideable: true, hidden: true) {
+            paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
+                      "<b>v1.5.7</b> — Bug fix: Stale ping verification masking dead battery devices<br>" +
+                      "<span style='color:#475569;font-size:12px;'>In v1.5.6 the \"Quiet verified reachable\" label was introduced but <code>pingWorks=true</code> had no expiry. A device with a dead battery (e.g. a button or sensor) could be permanently held at Quiet and never escalate to Poor or Offline. Verification trust now expires after your configured Offline Threshold. When trust expires the app clears <code>pingWorks</code> and the fairHold gate gets a fresh re-verification attempt before escalating to Poor then Offline. No action needed — updates automatically on next scan.</span><br><br>" +
+                      "<b>v1.5.6</b> — Added \"Quiet verified reachable\" display for Fair+verified devices. Added <code>lastKnownStateDate</code> tracking so verified refresh responses advance <code>lastSeen</code> even when <code>getLastActivity()</code> does not update (common in Z-Wave).<br><br>" +
+                      "<b>v1.5.5</b> — Verified devices capped at Fair to prevent false Poor/Offline on Z-Wave devices whose last activity timestamp does not update after command-triggered state reports.<br><br>" +
+                      "<b>v1.5.3</b> — Protocol-aware baseline floors (LAN/Hub Mesh 8h, Matter 2h, Virtual 24h). Loosened health ratio thresholds. Pingable hold-at-Fair gate.<br><br>" +
+                      "<b>v1.5.2</b> — Verification status auto-resets on health recovery. Hub Mesh overview page added.<br><br>" +
+                      "<b>v1.5.1</b> — State-change verification: devices that fire a state event are marked \"State verified\" without needing a ping.<br><br>" +
+                      "<b>v1.5.0</b> — Batch scanning, stuck-scan watchdog, deep verification scan, location assignment, SPA web portal with OAuth." +
+                      "</div>"
         }
     }
 }
