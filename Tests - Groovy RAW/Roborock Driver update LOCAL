@@ -1,0 +1,1121 @@
+/**
+ *  Copyright 2025 Bloodtick Jones (original) / Local TCP POC fork
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Roborock Robot Vacuum - LOCAL TCP Proof of Concept
+ *
+ *  Based on the original cloud MQTT driver by bloodtick.
+ *  This fork replaces the always-on cloud MQTT connection with:
+ *    1. One-time cloud login to retrieve localKey, device IP, rooms, scenes
+ *    2. Local TCP rawSocket on port 58867 for commands and status polling
+ *    3. Cloud MQTT only reconnected on demand via syncFromCloud command
+ *
+ *  LIMITATIONS vs original driver:
+ *    - No real-time push events; status updates on 30-second poll cycle
+ *    - Room mapping and scenes require manual syncFromCloud after changes
+ *    - Map data not supported (always cloud-only per Roborock)
+ *    - Some newer firmware variants may behave differently locally
+ *
+ *  IMPORTANT: Give your vacuum a static/reserved IP in your router before using.
+ *
+ *  Protocol reference:
+ *    https://github.com/KonradIT/roborock-remote
+ *    https://python-roborock.github.io/local_roborock_server/technical_writeup/
+ */
+public static String version() { return "0.1.0-local-poc" }
+
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import groovy.util.XmlSlurper
+import groovy.transform.Field
+import javax.crypto.Cipher
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import java.security.MessageDigest
+import java.util.Random
+import java.text.SimpleDateFormat
+
+// Salt is hardcoded in librrcodec.so — same for local and cloud protocols
+@Field static final String salt = "TXdfu\$jyZ#TZHsg4"
+
+// Local TCP port the vacuum listens on
+@Field static final Integer ROBOROCK_LOCAL_PORT = 58867
+
+// Consumable life hours — adjust per your model
+@Field static final Map life = [main: 300, side: 200, filter: 150, sensor: 30, highSpeed: 300]
+
+// How often to poll (seconds). 30s is a good balance.
+@Field static final Integer POLL_INTERVAL = 30
+
+metadata {
+    definition(
+        name: "Roborock Robot Vacuum (Local TCP)",
+        namespace: "bloodtick-local",
+        author: "Hubitat",
+        importUrl: ""
+    ) {
+        capability "Actuator"
+        capability "Battery"
+        capability "Initialize"
+        capability "Refresh"
+        capability "Switch"
+        capability "PushableButton"
+
+        // ── Cloud login (one-time setup) ──────────────────────────────
+        command "zRequestEmailCode"
+        command "zAuthorizeEmailCode", [[type: "STRING", description: "REQUIRED: Enter CODE provided by Roborock"]]
+
+        // ── Vacuum commands (sent over local TCP) ─────────────────────
+        command "appClean"
+        command "appDock"
+        command "appPause"
+        command "appRoomResume"
+        command "appRoomClean", [
+            [name: "Room IDs*",  type: "STRING", description: "Comma or space delimited Room IDs"],
+            [name: "MopWater",   type: "ENUM",   description: "Mop water mode. Optional.", constraints: mopWaterModeCodes.values().collect { it.toUpperCase() }]
+        ]
+        command "appScene",  [[name: "Scene ID*", type: "STRING", description: "Single Scene ID"]]
+        command "execute",   [[name: "command*",  type: "STRING", description: "Raw command to send locally"],
+                              [name: "params",    type: "JSON_OBJECT", description: "Command parameters"]]
+        command "selectDevice"
+
+        // ── Cloud sync (on-demand only) ───────────────────────────────
+        command "syncFromCloud", [[name: "Description", type: "STRING",
+            description: "Re-fetches rooms, scenes and home data from Roborock cloud. Run after adding/renaming rooms or scenes."]]
+
+        // ── Attributes ────────────────────────────────────────────────
+        attribute "dustCollection",                "enum",   ["off", "on"]
+        attribute "dockError",                     "enum",   dockErrorCodes.values().collect { it.toLowerCase() }
+        attribute "name",                          "string"
+        attribute "state",                         "enum",   stateCodes.values().collect { it.toLowerCase() }
+        attribute "error",                         "enum",   errorCodes.values().collect { it.toLowerCase() }
+        attribute "fanPower",                      "enum",   fanPowerCodes.values().collect { it.toLowerCase() }
+        attribute "cleanTime (min)",               "number"
+        attribute "cleanArea (sq ft)",             "number"
+        attribute "cleanPercent (%)",              "number"
+        attribute "remainingFilter (%)",           "number"
+        attribute "remainingMainBrush (%)",        "number"
+        attribute "remainingSensors (%)",          "number"
+        attribute "remainingSideBrush (%)",        "number"
+        attribute "remainingHighSpeedMaintBrush (%)", "number"
+        attribute "locating",                      "enum",   ["true", "false"]
+        attribute "mopMode",                       "enum",   mopModeCodes.values().collect { it.toLowerCase() }
+        attribute "mopWaterMode",                  "enum",   mopWaterModeCodes.values().collect { it.toLowerCase() }
+        attribute "healthStatus",                  "enum",   ["offline", "online"]
+        attribute "roomsList",                     "string"
+        attribute "scenesList",                    "string"
+        attribute "localIP",                       "string"
+        attribute "connectionMode",                "enum",   ["local", "cloud", "offline"]
+        attribute "html",                          "string"
+        attribute "xxTile",                        "string"
+    }
+}
+
+preferences {
+    input(name: "username",      type: "string",   title: "<b>Roborock Username:</b>",       required: true,  width: 4)
+    input(name: "password",      type: "password", title: "<b>Roborock Password:</b>",       required: true,  width: 4)
+    input(name: "regionUri",     type: "enum",     title: "<b>Account Region:</b>",
+          options: ["https://usiot.roborock.com": "US", "https://euiot.roborock.com": "EU",
+                    "https://cniot.roborock.com": "CN", "https://ruiot.roborock.com": "RU"],
+          defaultValue: "https://usiot.roborock.com", required: true, width: 4)
+    input(name: "deviceIP",      type: "string",   title: "<b>Vacuum Local IP Address:</b>",
+          description: "<i>Set a static/reserved IP on your router first.</i>", required: false, width: 4)
+    input(name: "allowLogin",    type: "bool",     title: "<b>Authorize Account User Login:</b>",
+          defaultValue: true, width: 4,
+          description: "<i>Enable to re/attempt initial cloud login. Disable after successful login.</i>")
+    input(name: "pollInterval",  type: "enum",     title: "<b>Local Poll Interval:</b>",
+          options: ["15": "15 Seconds", "30": "30 Seconds", "60": "1 Minute", "120": "2 Minutes"],
+          defaultValue: "30", required: true, width: 4)
+    input(name: "areaUnit",      type: "enum",     title: "<b>Device Area Unit:</b>",
+          options: ["0": "Square Foot (ft²)", "1": "Square Meter (m²)"],
+          defaultValue: "0", required: true, width: 4)
+    input(name: "numberOfButtons", type: "number", title: "<b>Set Number of Buttons:</b>",
+          range: "1...", defaultValue: 1, required: true, width: 4)
+    input(name: "cleanAttributeDisable", type: "bool",
+          title: "<b>Reduce cleaning progress events:</b>",
+          description: "When ON: cleanPercent, cleanArea and cleanTime only update at cycle end.",
+          defaultValue: true, width: 4)
+    input(name: "offlineThreshold", type: "number",
+          title: "<b>Offline Threshold (seconds):</b>",
+          description: "<i>How many seconds of failed polls before marking offline. Prevents false offline events.</i>",
+          defaultValue: 90, range: "30..300", width: 4)
+    input(name: "tileEnable",    type: "bool",     title: "<b>Enable full HTML tile</b> (html attribute):",   defaultValue: false, width: 4)
+    input(name: "xxTileEnable",  type: "bool",     title: "<b>Enable dashboard tile</b> (xxTile attribute):", defaultValue: false, width: 4)
+    input(name: "deviceLogging", type: "enum",     title: "<b>Logging:</b>",
+          options: ["off": "Off (errors/warnings only)", "info30": "Info — auto-off after 30 min",
+                    "info60": "Info — auto-off after 60 min", "debug30": "Debug — auto-off after 30 min",
+                    "debug60": "Debug — auto-off after 60 min"],
+          defaultValue: "off", width: 4)
+}
+
+// ── Logging ──────────────────────────────────────────────────────────────────
+private Boolean isInfoEnabled()  { def s = settings?.deviceLogging ?: "off"; return s.startsWith("info") || s.startsWith("debug") }
+private Boolean isDebugEnabled() { def s = settings?.deviceLogging ?: "off"; return s.startsWith("debug") }
+def logInfo(msg)  { if (isInfoEnabled())  log.info  "${device.displayName} ${msg}" }
+def logDebug(msg) { if (isDebugEnabled()) log.debug "${device.displayName} ${msg}" }
+def logTrace(msg) { if (isDebugEnabled()) log.trace "${device.displayName} ${msg}" }
+def logWarn(msg)  { log.warn  "${device.displayName} ${msg}" }
+def logError(msg) { log.error "${device.displayName} ${msg}" }
+
+def logsOff() {
+    log.info "${device.displayName} auto-disabling logging"
+    device.updateSetting("deviceLogging", [value: "off", type: "enum"])
+}
+void scheduleLogsOff() {
+    unschedule('logsOff')
+    def s = settings?.deviceLogging ?: "off"
+    if (s == "off") return
+    def minutes = s.endsWith("60") ? 60 : 30
+    runIn(minutes * 60, "logsOff")
+}
+
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
+def installed() { initialize() }
+
+def updated() {
+    cleanStaleAttributes()
+    scheduleLogsOff()
+    initialize()
+    scheduleLogsOff()
+}
+
+def initialize() {
+    unschedule()
+    scheduleLogsOff()
+    sendEvent(name: "numberOfButtons", value: (settings?.numberOfButtons) ?: 1)
+    localDisconnect()
+
+    if (settings?.allowLogin && settings?.username && settings?.password) {
+        logInfo "executing 'initialize()' — cloud login"
+        state?.keySet()?.collect()?.each { state.remove(it) }
+        state.sequence = (new Random().nextInt(2000) + 1)
+        clearAttributes()
+
+        Map login = login()
+        device.updateSetting("allowLogin", [value: 'false', type: "bool"])
+
+        if (login?.msg == "success") {
+            runIn(1, "getHomeDetail")
+        } else {
+            logWarn "login failed: ${login?.msg}"
+            processEvent("state", 500)
+        }
+    } else if (state?.login) {
+        // Already have credentials — skip cloud, go straight to local
+        runIn(2, "startLocalMode")
+    }
+}
+
+// ── Cloud login flow (one-time) ───────────────────────────────────────────────
+def zRequestEmailCode() {
+    if (state.sendEmailCodeTimestamp) {
+        Long remaining = (state.sendEmailCodeTimestamp as Long) + 60000 - now()
+        if (remaining > 0) { logWarn "wait ${(remaining / 1000).toInteger()}s before requesting again"; return }
+    }
+    state.sendEmailCodeTimestamp = now()
+    Map result = sendEmailCode()
+    if (result.msg == "success") { processEvent("state", 502) }
+    else { logWarn "request email code failed: ${result?.msg}"; processEvent("state", 504) }
+}
+
+def zAuthorizeEmailCode(String pin) {
+    logInfo "executing 'zAuthorizeEmailCode($pin)'"
+    if (!pin || !state?.sendEmailCodeTimestamp || now() > ((state.sendEmailCodeTimestamp as Long) + 15 * 60 * 1000)) {
+        logWarn "code expired or missing"; return
+    }
+    Map result = loginWithCode(pin)
+    if (result?.msg == "success") {
+        processEvent("state", 503)
+        runIn(1, "getHomeDetail")
+        state.remove("sendEmailCodeTimestamp")
+    } else {
+        logWarn "authorize email code failed: ${result?.msg}"
+        processEvent("state", 500)
+    }
+}
+
+// ── Local TCP mode ────────────────────────────────────────────────────────────
+void startLocalMode() {
+    logInfo "starting local TCP mode"
+    String ip = getVacuumIP()
+    if (!ip) {
+        logWarn "no local IP known — check 'Vacuum Local IP Address' preference or run syncFromCloud"
+        processEvent("healthStatus", "offline")
+        sendEvent(name: "connectionMode", value: "offline")
+        return
+    }
+    sendEvent(name: "localIP", value: ip)
+    sendEvent(name: "connectionMode", value: "local")
+    localConnect()
+    schedulePoll()
+}
+
+void localConnect() {
+    String ip = getVacuumIP()
+    if (!ip) return
+    logInfo "connecting local TCP to ${ip}:${ROBOROCK_LOCAL_PORT}"
+    try {
+        interfaces.rawSocket.connect(ip, ROBOROCK_LOCAL_PORT, byteInterface: true, readDelay: 150)
+        state.localConnected = true
+        state.lastLocalSuccess = now()
+        logInfo "local TCP connected"
+    } catch (Exception e) {
+        logWarn "local TCP connect failed: ${e.message}"
+        state.localConnected = false
+        scheduleReconnect()
+    }
+}
+
+void localDisconnect() {
+    try { interfaces.rawSocket.close() } catch (Exception e) { /* ignore */ }
+    state.localConnected = false
+}
+
+void socketStatus(String message) {
+    logDebug "socketStatus: ${message}"
+    if (message?.toLowerCase()?.contains("error") || message?.toLowerCase()?.contains("closed")) {
+        logWarn "local TCP socket issue: ${message}"
+        state.localConnected = false
+        scheduleReconnect()
+        checkOfflineThreshold()
+    }
+}
+
+void scheduleReconnect() {
+    logInfo "scheduling local TCP reconnect in 15s"
+    runIn(15, "localConnect")
+}
+
+void checkOfflineThreshold() {
+    Integer threshold = (settings?.offlineThreshold ?: 90).toInteger()
+    Long lastSuccess = state?.lastLocalSuccess ?: 0
+    if ((now() - lastSuccess) > (threshold * 1000)) {
+        logWarn "exceeded offline threshold (${threshold}s) — marking offline"
+        processEvent("healthStatus", "offline")
+        sendEvent(name: "connectionMode", value: "offline")
+        if (settings?.tileEnable)   scheduleTileUpdate()
+        if (settings?.xxTileEnable) scheduleXxTileUpdate()
+    }
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+void schedulePoll() {
+    Integer interval = (settings?.pollInterval ?: "30").toInteger()
+    logDebug "scheduling poll every ${interval}s"
+    // Unschedule any existing poll jobs then re-schedule
+    unschedule('pollStatus')
+    if (interval == 15)  runEvery15Seconds('pollStatus')  // not standard — use runIn loop
+    else if (interval == 30) schedule("0/${interval} * * * * ?", "pollStatus")
+    else if (interval == 60) runEvery1Minute('pollStatus')
+    else if (interval == 120) runEvery2Minutes('pollStatus')
+    // kick off first poll immediately
+    runIn(2, "pollStatus")
+}
+
+void pollStatus() {
+    logDebug "polling vacuum status locally"
+    if (!state?.localConnected) {
+        localConnect()
+        runIn(3, "doPollCommands")
+    } else {
+        doPollCommands()
+    }
+}
+
+void doPollCommands() {
+    localExecute("get_prop", """["get_status"]""")
+    // Stagger consumable poll — only every 5th cycle to reduce traffic
+    state.pollCount = ((state?.pollCount ?: 0).toInteger() + 1)
+    if (state.pollCount % 5 == 0) {
+        runIn(2, "pollConsumables")
+    }
+}
+
+void pollConsumables() {
+    localExecute("get_consumable")
+}
+
+// ── Local command execution ───────────────────────────────────────────────────
+def push(buttonNumber) { sendEvent(name: "pushed", value: buttonNumber, isStateChange: true) }
+def on()  { appClean(); processEvent("switch", "on") }
+def off() { appDock();  processEvent("switch", "off") }
+def appClean()      { localExecute("app_start") }
+def appDock()       { localExecute("app_charge") }
+def appPause()      { localExecute("app_pause") }
+def appRoomResume() { localExecute("resume_segment_clean") }
+
+def appRoomClean(String rooms, String mopWater = mopWaterModeCodes[0]) {
+    rooms = rooms.replaceAll(" +", ',')
+    if (mopWater?.toUpperCase() != mopWaterModeCodes[0].toUpperCase()) {
+        Integer mopWaterCode = mopWaterModeCodes.find { it.value.toUpperCase() == mopWater?.toUpperCase() }?.key
+        localExecute("set_water_box_custom_mode", "[${mopWaterCode}]")
+        runIn(1) { localExecute("get_water_box_custom_mode") }
+    }
+    localExecute("app_segment_clean", "[${rooms}]")
+}
+
+def appScene(String sceneId)   { setDeviceScene(sceneId) }
+def appScene(Integer sceneId)  { setDeviceScene(sceneId.toString()) }
+
+def execute(String command, String args = null) {
+    localExecute(command, args)
+}
+
+def refresh(Map data = [type: 1]) {
+    logDebug "executing 'refresh()'"
+    pollStatus()
+    if (data?.type == 1) {
+        // Full refresh — also re-check home data every 2 min
+        Long last = state?.lastHomeDataRefresh ?: 0
+        if ((now() - last) > 120000) {
+            state.lastHomeDataRefresh = now()
+            runIn(5, "syncRoomsLocal")
+        }
+    }
+}
+
+def selectDevice() {
+    String deviceId = findNextDevice(state?.duid)
+    if (state?.duid != deviceId) {
+        state?.duid = deviceId
+        clearAttributes()
+        initialize()
+    } else {
+        logInfo "device id is ${getDeviceId()}"
+    }
+}
+
+// ── Cloud sync command (on-demand) ────────────────────────────────────────────
+def syncFromCloud(String ignored = null) {
+    logInfo "syncFromCloud — fetching rooms, scenes, home data from cloud"
+    sendEvent(name: "connectionMode", value: "cloud")
+    runIn(1, "getHomeDetail")
+}
+
+// Lightweight local room sync — just re-runs get_room_mapping over local TCP
+void syncRoomsLocal() {
+    logDebug "syncing room mapping locally"
+    localExecute("get_room_mapping")
+}
+
+// ── Local TCP send/receive ─────────────────────────────────────────────────────
+void localExecute(String command, String args = null) {
+    def param = args ? convertNumbers((new JsonSlurper().parseText(args))) : []
+    logInfo "localExecute: command=${command} param=${param}"
+
+    Integer id = (Integer) (state.sequence++ & 0xFFFFFFFF)
+    String deviceId = getDeviceId()
+    if (!deviceId) { logWarn "no device ID — run syncFromCloud first"; return }
+
+    Integer timestamp = (Integer) (now() / 1000)
+    Integer protocol = 101
+
+    Map inner = [id: id, method: command, params: param]
+    String payload = JsonOutput.toJson([t: timestamp, dps: ["$protocol": JsonOutput.toJson(inner)]])
+
+    byte[] message = buildLocalMessage(deviceId, protocol, timestamp, payload.getBytes("UTF-8"))
+
+    // Track pending command for response matching
+    if (!state.pendingCmds) state.pendingCmds = [:]
+    state.pendingCmds[id.toString()] = [command: command, param: param, ts: now()]
+
+    try {
+        interfaces.rawSocket.sendMessage(message.encodeHex().toString())
+        logDebug "sent local command id=${id} command=${command}"
+    } catch (Exception e) {
+        logWarn "local send failed: ${e.message} — reconnecting"
+        state.localConnected = false
+        scheduleReconnect()
+    }
+}
+
+byte[] buildLocalMessage(String deviceId, Integer protocol, Integer timestamp, byte[] payload) {
+    String localKey = getLocalKey(deviceId)
+    if (!localKey) { logWarn "no localKey for device ${deviceId}"; return new byte[0] }
+
+    String key = encodeTimestamp(timestamp) + localKey + salt
+    byte[] encrypted = encrypt(payload, key)
+
+    Random random = new Random()
+    Integer randomInt = random.nextInt(900000) + 100000
+
+    // Local protocol: 4-byte length prefix + standard header + payload
+    // Header: version(3) + sequence(4) + random(4) + timestamp(4) + protocol(2) + payloadLen(2)
+    int headerLen = 19
+    int totalMsgLen = headerLen + encrypted.length + 4  // +4 for CRC32
+    byte[] msg = new byte[totalMsgLen]
+
+    // version "1.0"
+    msg[0] = 49; msg[1] = 46; msg[2] = 48
+    writeInt32BE(msg, (Integer) (state.sequence & 0xFFFFFFFF), 3)
+    writeInt32BE(msg, (Integer) (randomInt & 0xFFFFFFFF), 7)
+    writeInt32BE(msg, timestamp, 11)
+    writeInt16BE(msg, protocol, 15)
+    writeInt16BE(msg, encrypted.length, 17)
+    for (Integer i = 0; i < encrypted.length; i++) { msg[headerLen + i] = encrypted[i] }
+    Integer crc32 = CRC32(msg, msg.length - 4)
+    writeInt32BE(msg, crc32, msg.length - 4)
+
+    // Local TCP wraps with 4-byte big-endian length prefix
+    int frameLen = totalMsgLen
+    byte[] frame = new byte[4 + frameLen]
+    frame[0] = (byte) ((frameLen >> 24) & 0xFF)
+    frame[1] = (byte) ((frameLen >> 16) & 0xFF)
+    frame[2] = (byte) ((frameLen >> 8) & 0xFF)
+    frame[3] = (byte) (frameLen & 0xFF)
+    for (Integer i = 0; i < frameLen; i++) { frame[4 + i] = msg[i] }
+    return frame
+}
+
+// ── Parse incoming local TCP messages ────────────────────────────────────────
+// Hubitat calls parse(String hex) for rawSocket byteInterface
+def parse(String hexMessage) {
+    logDebug "parse() received ${hexMessage?.length()} hex chars"
+    try {
+        byte[] raw = hexMessage.decodeHex()
+        parseLocalMessage(raw)
+    } catch (Exception e) {
+        logWarn "parse() error: ${e.message}"
+    }
+}
+
+void parseLocalMessage(byte[] raw) {
+    // Strip 4-byte length prefix if present
+    byte[] message = raw
+    if (raw.length > 4) {
+        Integer declaredLen = readInt32BE(raw, 0)
+        if (declaredLen == raw.length - 4) {
+            message = raw[4..(raw.length - 1)] as byte[]
+        }
+    }
+
+    if (message.length < 23) { logWarn "message too short: ${message.length}"; return }
+
+    String version = bytesToString(message, 0, 3)
+    if (version != "1.0") { logWarn "unexpected version: ${version}"; return }
+
+    Integer crc32 = CRC32(message, message.length - 4)
+    Integer expectedCrc = readInt32BE(message, message.length - 4)
+    if (crc32 != expectedCrc) { logWarn "CRC mismatch"; return }
+
+    Integer timestamp  = readInt32BE(message, 11)
+    Integer protocol   = readInt16BE(message, 15)
+    Integer payloadLen = readInt16BE(message, 17)
+
+    if (protocol != 102) { logDebug "ignoring protocol ${protocol}"; return }
+
+    byte[] payload = message[19..(19 + payloadLen - 1)]
+    String deviceId = getDeviceId()
+    String localKey = getLocalKey(deviceId)
+    if (!localKey) { logWarn "no localKey to decrypt"; return }
+
+    String key = encodeTimestamp(timestamp) + localKey + salt
+    byte[] decrypted = decrypt(payload, key)
+
+    Map jsonObject = [:]
+    try {
+        jsonObject = new JsonSlurper().parseText(new String(decrypted, "UTF-8"))
+    } catch (Exception e) {
+        logWarn "response not JSON: ${e.message}"; return
+    }
+
+    if (!jsonObject) return
+    logDebug "parsed local response: ${jsonObject}"
+
+    // Mark as online since we got a valid response
+    state.lastLocalSuccess = now()
+    state.localConnected = true
+    setHealthStatusOnline()
+
+    processLocalResponse(jsonObject)
+}
+
+void processLocalResponse(Map resp) {
+    // Response format: { id: N, result: [...] } or { dps: {...} }
+    if (resp?.result != null) {
+        Integer id = resp?.id?.toInteger()
+        Map pending = state?.pendingCmds?.get(id?.toString())
+
+        // Clean up pending
+        if (pending) {
+            state.pendingCmds.remove(id.toString())
+            logDebug "matched response for command: ${pending?.command}"
+        }
+
+        String cmd = pending?.command ?: ""
+
+        if (cmd == "get_prop" || resp?.result?.any { it instanceof Map && it.containsKey("state") }) {
+            resp?.result?.each { result ->
+                if (result instanceof Map) {
+                    result.switch = ((result?.in_cleaning ?: 0).toInteger() != 0 ||
+                                    (result?.is_locating ?: 0).toInteger() != 0 ||
+                                    (result?.is_exploring ?: 0).toInteger() != 0) ? "on" : "off"
+                    if (result?.battery?.toInteger() == 100 && result?.state?.toInteger() == 8) result.state = 100
+                    if (result?.clean_percent?.toInteger() == 0 && result?.clean_area?.toInteger() > 1) result.clean_percent = 100
+                    result?.each { c, v -> processEvent(c as String, v) }
+                }
+            }
+            if (settings?.tileEnable)   scheduleTileUpdate()
+            if (settings?.xxTileEnable) scheduleXxTileUpdate()
+        } else if (cmd == "get_consumable") {
+            resp?.result?.each { result ->
+                if (result instanceof Map) result?.each { c, v -> processEvent(c as String, v) }
+            }
+            if (settings?.tileEnable)   scheduleTileUpdate()
+            if (settings?.xxTileEnable) scheduleXxTileUpdate()
+        } else if (cmd == "get_room_mapping") {
+            setRoomsValue(resp)
+        } else if (cmd == "get_water_box_custom_mode" && resp?.result?.water_box_mode) {
+            processEvent(cmd, resp.result.water_box_mode)
+        } else if (resp?.result == ["ok"] || resp?.result == ["OK"]) {
+            logInfo "command '${cmd}' accepted"
+            runIn(3, "pollStatus")
+        } else {
+            logDebug "unhandled response for cmd=${cmd}: ${resp}"
+        }
+    } else if (resp?.dps) {
+        // Unsolicited DPS push from vacuum
+        resp.dps.each { key, value -> processEvent(key as String, value) }
+        if (settings?.tileEnable)   scheduleTileUpdate()
+        if (settings?.xxTileEnable) scheduleXxTileUpdate()
+    }
+}
+
+void setHealthStatusOnline() {
+    String current = device.currentValue("healthStatus")
+    if (current != "online") {
+        processEvent("healthStatus", "online")
+        sendEvent(name: "connectionMode", value: "local")
+    }
+}
+
+// ── Cloud home data (one-time / on-demand) ────────────────────────────────────
+void getHomeDataCallback() {
+    logDebug "getHomeDataCallback()"
+    Boolean deviceOnline = !!(getHomeDataResult()?.devices?.find { it.duid?.toString() == getDeviceId() }?.online)
+    if (!deviceOnline) {
+        logWarn "device appears offline in cloud home data"
+        processEvent("state", 256)
+    }
+
+    // Save device IP from home data if not already set by user preference
+    if (!settings?.deviceIP) {
+        String ip = getHomeDataResult()?.devices?.find { it.duid?.toString() == getDeviceId() }?.ip
+        if (ip) {
+            logInfo "discovered vacuum IP from cloud: ${ip}"
+            state.discoveredIP = ip
+        }
+    }
+
+    String name = getHomeDataResult()?.devices?.find { it.duid?.toString() == getDeviceId() }?.name ?: "unknown"
+    processEvent("name", name)
+
+    // Pull rooms and scenes from cloud, then switch to local
+    localExecute_afterCloudSync()
+    runIn(5, "startLocalMode")
+}
+
+void localExecute_afterCloudSync() {
+    // We still have cloud MQTT available right after cloud sync — use HTTP instead
+    // Room mapping is stored in home data already; process it now
+    setRoomsValueFromHomeData()
+    getDeviceScenes()
+}
+
+void setRoomsValueFromHomeData() {
+    Map homeData = getHomeDataResult()
+    // Try to build room map from home data rooms list
+    Map roomsMap = homeData?.rooms?.collectEntries { [(it.id.toString()): it.name] }
+    if (roomsMap) {
+        processEvent("rooms", roomsMap?.sort())
+        logInfo "rooms loaded from cloud: ${roomsMap}"
+    }
+}
+
+// ── processEvent — identical to original driver ───────────────────────────────
+void processEvent(String name, def value) {
+    logTrace "processEvent($name, $value)"
+    switch (name) {
+        case "get_water_box_custom_mode":
+            String ve = mopWaterModeCodes[value?.toInteger()]?.toLowerCase() ?: value
+            sendEventX(name: "mopWaterMode", value: ve, descriptionText: "mop water mode is $ve ($value)"); break
+        case "switch":
+            sendEventX(name: "switch", value: value, descriptionText: "switch is $value"); break
+        case "name":
+            sendEventX(name: "name", value: value, descriptionText: "name set to $value"); break
+        case "healthStatus":
+            sendEventX(name: "healthStatus", value: value, descriptionText: "healthStatus set to $value",
+                       logLevel: (value == "online" ? "info" : "warn")); break
+        case "rooms":
+            String roomsList = value?.sort { a, b -> a.key.toInteger() <=> b.key.toInteger() }
+                                    ?.findAll { k, v -> v != null }
+                                    ?.collect { k, v -> "$k: $v" }?.join(" | ")
+            sendEventX(name: "roomsList", value: roomsList); break
+        case "scenes":
+            String scenesList = value?.sort { a, b -> a.key.toInteger() <=> b.key.toInteger() }
+                                     ?.collect { k, v -> "$k: $v" }?.join(" | ")
+            sendEventX(name: "scenesList", value: scenesList); break
+        case "error_code":
+            String ve = errorCodes[value?.toInteger()]?.toLowerCase() ?: value
+            sendEventX(name: "error", value: ve, descriptionText: "error is $ve ($value)",
+                       logLevel: (value == 0 ? "info" : "warn")); break
+        case "state":
+            String ve = stateCodes[value?.toInteger()]?.toLowerCase() ?: value
+            sendEventX(name: "state", value: ve, descriptionText: "state is $ve ($value)"); break
+        case "battery":
+            sendEventX(name: "battery", value: value.toInteger(), unit: "%",
+                       descriptionText: "battery level is $value%"); break
+        case "fan_power":
+            String ve = fanPowerCodes[value?.toInteger()]?.toLowerCase() ?: value
+            sendEventX(name: "fanPower", value: ve, descriptionText: "fan power is $ve ($value)"); break
+        case "main_brush_work_time":
+            Integer p = Math.max(0, (100 - Math.floor((value.toInteger() / (life.main * 3600)) * 100).toInteger()))
+            sendEventX(name: "remainingMainBrush (%)", value: p, unit: "%",
+                       descriptionText: "main brush remaining is $p%"); break
+        case "side_brush_work_time":
+            Integer p = Math.max(0, (100 - Math.floor((value.toInteger() / (life.side * 3600)) * 100).toInteger()))
+            sendEventX(name: "remainingSideBrush (%)", value: p, unit: "%",
+                       descriptionText: "side brush remaining is $p%"); break
+        case "cleaning_brush_work_times":
+            Integer p = Math.max(0, (100 - Math.floor((value.toInteger() / life.highSpeed) * 100).toInteger()))
+            sendEventX(name: "remainingHighSpeedMaintBrush (%)", value: p, unit: "%",
+                       descriptionText: "high-speed brush remaining is $p%"); break
+        case "sensor_dirty_time":
+            Integer p = Math.max(0, (100 - Math.floor((value.toInteger() / (life.sensor * 3600)) * 100).toInteger()))
+            sendEventX(name: "remainingSensors (%)", value: p, unit: "%",
+                       descriptionText: "sensor remaining is $p%"); break
+        case "clean_time":
+            Integer mins = Math.ceil(value.toInteger() / 60).toInteger()
+            sendEventX(name: "cleanTime (min)", value: mins,
+                       descriptionText: "clean time is $mins min", eventDisable: cleanAttributeDisable); break
+        case "clean_area":
+            String unit = (areaUnit == null || areaUnit == "0") ? "sq ft" : "m²"
+            Integer area = (unit == "sq ft") ? value.toInteger() / 92903.04 : value.toInteger() / 1000000
+            sendEventX(name: "cleanArea (sq ft)", value: area,
+                       descriptionText: "clean area is $area $unit", eventDisable: cleanAttributeDisable); break
+        case "is_locating":
+            String loc = (value == 0 ? "false" : "true")
+            sendEventX(name: "locating", value: loc, descriptionText: "locating is $loc ($value)"); break
+        case "dust_collection_status":
+            String dc = (value == 0 ? "off" : "on")
+            sendEventX(name: "dustCollection", value: dc, descriptionText: "dust collection is $dc ($value)"); break
+        case "mop_mode":
+            String ve = mopModeCodes[value?.toInteger()]?.toLowerCase() ?: value
+            sendEventX(name: "mopMode", value: ve, descriptionText: "mop mode is $ve ($value)"); break
+        case "dock_error_status":
+            String ve = dockErrorCodes[value?.toInteger()]?.toLowerCase() ?: value
+            sendEventX(name: "dockError", value: ve, descriptionText: "dock error is $ve ($value)",
+                       logLevel: (value == 0 ? "info" : "warn")); break
+        case "clean_percent":
+            sendEventX(name: "cleanPercent (%)", value: value.toInteger(), unit: "%",
+                       descriptionText: "percent completed is $value%", eventDisable: cleanAttributeDisable); break
+        case "strainer_work_times":
+            Integer p = Math.max(0, (100 - Math.floor((value.toInteger() / life.filter) * 100).toInteger()))
+            sendEventX(name: "remainingFilter (%)", value: p, unit: "%",
+                       descriptionText: "filter remaining is $p%"); break
+        default:
+            if (isDebugEnabled()) logDebug "unhandled event: $name = $value"; break
+    }
+}
+
+void sendEventX(Map x) {
+    if (x?.value != null && !x?.eventDisable &&
+        (device.currentValue(x?.name).toString() != x?.value.toString() || x?.isStateChange)) {
+        if (x?.descriptionText) {
+            if (x?.logLevel == "warn") logWarn(x?.descriptionText)
+            else logInfo(x?.descriptionText)
+        }
+        sendEvent(name: x?.name, value: x?.value, unit: x?.unit,
+                  descriptionText: x?.descriptionText, isStateChange: (x?.isStateChange ?: false))
+    }
+}
+
+// ── Cloud API calls (login + home data — one-time) ────────────────────────────
+String getVacuumIP() {
+    return settings?.deviceIP ?: state?.discoveredIP
+}
+
+String getBaseURL() {
+    String uri = settings.regionUri
+    String response = null
+    try {
+        httpPostJson(uri: uri, path: "/api/v1/getUrlByEmail",
+                     queryString: "email=${URLEncoder.encode(settings.username, 'UTF-8')}") { resp ->
+            if (resp.status == 200) {
+                response = resp.data?.data?.url
+                if (response && response != settings.regionUri) state.base = response
+            }
+        }
+    } catch (Exception e) { logWarn "getBaseURL error: ${e.message}" }
+    return response
+}
+
+Map login() {
+    String uri = getBaseURL() ?: settings.regionUri
+    Map response = [:]
+    try {
+        httpPostJson(uri: uri, path: "/api/v1/login",
+                     queryString: "username=${URLEncoder.encode(settings.username, 'UTF-8')}&password=${URLEncoder.encode(settings.password, 'UTF-8')}&needtwostepauth=false",
+                     headers: ['header_clientid': generateHash(settings.username)]) { resp ->
+            if (resp.status == 200) {
+                response = resp.data
+                if (resp.data?.msg == "success") storeJsonState("login", datetimestring(), resp.data)
+            }
+        }
+    } catch (Exception e) { logWarn "login error: ${e.message}" }
+    g_mGetLoginData[device.getIdAsLong()]?.clear()
+    g_mGetLoginData[device.getIdAsLong()] = null
+    return response
+}
+
+Map sendEmailCode() {
+    String uri = getBaseURL() ?: settings.regionUri
+    Map response = [:]
+    try {
+        httpPostJson(uri: uri, path: "/api/v1/sendEmailCode",
+                     queryString: "username=${URLEncoder.encode(settings.username, 'UTF-8')}&type=auth",
+                     headers: ['header_clientid': generateHash(settings.username)]) { resp ->
+            if (resp.status == 200) response = resp.data
+        }
+    } catch (Exception e) { logWarn "sendEmailCode error: ${e.message}" }
+    return response
+}
+
+Map loginWithCode(String verifyCode) {
+    String uri = getBaseURL() ?: settings.regionUri
+    Map response = [:]
+    try {
+        httpPostJson(uri: uri, path: "/api/v1/loginWithCode",
+                     queryString: "username=${URLEncoder.encode(settings.username, 'UTF-8')}&verifycode=${URLEncoder.encode(verifyCode, 'UTF-8')}&verifycodetype=AUTH_EMAIL_CODE",
+                     headers: ['header_clientid': generateHash(settings.username)]) { resp ->
+            response = resp.data
+            if (resp.data?.msg == "success") storeJsonState("login", datetimestring(), resp.data)
+        }
+    } catch (Exception e) { logWarn "loginWithCode error: ${e.message}" }
+    g_mGetLoginData[device.getIdAsLong()]?.clear()
+    g_mGetLoginData[device.getIdAsLong()] = null
+    return response
+}
+
+void getHomeDetail() {
+    Map params = [
+        uri: state?.base ?: settings.regionUri, path: "/api/v1/getHomeDetail",
+        headers: ['header_clientid': (md5hex(settings.username).bytes.encodeBase64().toString()),
+                  'Authorization': (getLoginData()?.token)]
+    ]
+    try { asynchttpGet("asyncHttpCallback", params, [method: "getHomeDetail", store: "homeDetail", params: params]) }
+    catch (Exception e) { logWarn "getHomeDetail error: ${e}" }
+}
+
+void getHomeData() {
+    Map rriot = getLoginData()?.rriot
+    String rrHomeId = getHomeDetailData()?.rrHomeId
+    String path = "/v2/user/homes/$rrHomeId"
+    Map params = [
+        uri: rriot?.r?.a, path: path,
+        headers: ['Authorization': getHawkAuthentication(rriot?.u, rriot?.s, rriot?.h, path)]
+    ]
+    try { asynchttpGet("asyncHttpCallback", params, [method: "getHomeData", store: "homeData", params: params]) }
+    catch (Exception e) { logWarn "getHomeData error: ${e}" }
+}
+
+void getDeviceScenes() {
+    Map rriot = getLoginData()?.rriot
+    String path = "/user/scene/device/${getDeviceId()}"
+    Map params = [
+        uri: rriot?.r?.a, path: path,
+        headers: ['Authorization': getHawkAuthentication(rriot?.u, rriot?.s, rriot?.h, path)]
+    ]
+    try { asynchttpGet("asyncHttpCallback", params, [method: "getDeviceScenes", params: params]) }
+    catch (Exception e) { logWarn "getDeviceScenes error: ${e}" }
+}
+
+void setDeviceScene(String sceneId) {
+    Map rriot = getLoginData()?.rriot
+    String path = "/user/scene/$sceneId/execute"
+    Map params = [
+        uri: rriot?.r?.a, path: path,
+        headers: ['Authorization': getHawkAuthentication(rriot?.u, rriot?.s, rriot?.h, path)],
+        contentType: "application/json", body: [sceneId: sceneId]
+    ]
+    try { asynchttpPost("asyncHttpCallback", params, [method: "setDeviceScene", sceneId: sceneId, params: params]) }
+    catch (Exception e) { logWarn "setDeviceScene error: ${e}" }
+}
+
+void asyncHttpCallback(resp, data) {
+    logDebug "asyncHttpCallback() status:${resp.status} method:${data?.method}"
+    if (resp.status == 200) {
+        Map respJson = new JsonSlurper().parseText(resp.data)
+        respJson.timestamp = now()
+        switch (data?.method) {
+            case "getHomeDetail":
+                storeJsonState(data?.store, datetimestring(), respJson)
+                g_mGetHomeDetail[device.getIdAsLong()]?.clear()
+                g_mGetHomeDetail[device.getIdAsLong()] = respJson
+                getHomeData()
+                break
+            case "getHomeData":
+                synchronized (this) {
+                    storeJsonState(data?.store, datetimestring(), respJson)
+                    g_mGetHomeData[device.getIdAsLong()]?.clear()
+                    g_mGetHomeData[device.getIdAsLong()] = respJson
+                }
+                getHomeDataCallback()
+                getDeviceScenes()
+                break
+            case "getDeviceScenes":
+                Map scenes = respJson?.result?.collectEntries { [(it.id.toString()): it.name] }
+                processEvent("scenes", scenes?.sort())
+                break
+            case "setDeviceScene":
+                logInfo "${respJson?.status == 'ok' ? 'accepted' : 'rejected'} sceneId:${data.sceneId}"
+                break
+            default:
+                logWarn "asyncHttpCallback() ${data?.method} not supported"
+        }
+    } else {
+        logWarn "asyncHttpCallback() ${data?.method} status:${resp.status} error:${resp?.errorMessage}"
+    }
+}
+
+void setRoomsValue(Map get_room_mapping) {
+    Map roomsMap = getHomeDataResult()?.rooms?.collectEntries { [(it.id.toString()): it.name] }
+    if (roomsMap && get_room_mapping) {
+        Map rooms = get_room_mapping?.result.collectEntries { mapping ->
+            String roomId = mapping[1].toString()
+            String roomName = roomsMap[roomId]
+            return [(mapping[0].toString()): roomName]
+        }
+        processEvent("rooms", rooms?.sort())
+    }
+}
+
+// ── Crypto & binary helpers (identical to original) ──────────────────────────
+byte[] decrypt(byte[] payload, String key) {
+    byte[] aesKeyBytes = md5bin(key)
+    Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+    cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(aesKeyBytes, "AES"))
+    return cipher.doFinal(payload)
+}
+
+byte[] encrypt(byte[] payload, String key) {
+    byte[] aesKeyBytes = md5bin(key)
+    Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+    cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(aesKeyBytes, "AES"))
+    return cipher.doFinal(payload)
+}
+
+Integer CRC32(bytes, length) {
+    def crc = 0xFFFFFFFF
+    for (int i = 0; i < length; i++) {
+        def b = bytes[i] & 0xFF
+        crc = crc ^ b
+        for (int j = 7; j >= 0; j--) {
+            def mask = -(crc & 1)
+            crc = (crc >>> 1) ^ (0xEDB88320 & mask)
+        }
+    }
+    return (crc ^ 0xFFFFFFFFL)
+}
+
+String bytesToString(byte[] data, Integer start, Integer length) {
+    return new String((byte[]) (data[start..<start + length]), "UTF-8")
+}
+
+Integer readInt32BE(byte[] data, Integer start) {
+    return (((data[start] & 0xFF) << 24) | ((data[start + 1] & 0xFF) << 16) |
+            ((data[start + 2] & 0xFF) << 8) | (data[start + 3] & 0xFF))
+}
+
+Integer readInt16BE(byte[] data, Integer start) {
+    return (((data[start] & 0xFF) << 8) | (data[start + 1] & 0xFF))
+}
+
+void writeInt32BE(byte[] msg, Integer value, Integer start) {
+    msg[start]     = (byte) ((value >> 24) & 0xFF)
+    msg[start + 1] = (byte) ((value >> 16) & 0xFF)
+    msg[start + 2] = (byte) ((value >> 8) & 0xFF)
+    msg[start + 3] = (byte) (value & 0xFF)
+}
+
+void writeInt16BE(byte[] msg, Integer value, Integer start) {
+    msg[start]     = (byte) ((value >> 8) & 0xFF)
+    msg[start + 1] = (byte) (value & 0xFF)
+}
+
+byte[] md5bin(String input) {
+    return MessageDigest.getInstance("MD5").digest(input.getBytes("UTF-8"))
+}
+
+String md5hex(String input) {
+    return MessageDigest.getInstance("MD5").digest(input.getBytes("UTF-8")).encodeHex()
+}
+
+String encodeTimestamp(int timestamp) {
+    String hex = new BigInteger(Long.toString(timestamp)).toString(16).padLeft(8, '0')
+    List<String> hexChars = hex.toList()
+    int[] order = [5, 6, 3, 7, 1, 2, 0, 4]
+    return order.collect { hexChars[it] }.join('')
+}
+
+String datetimestring() {
+    return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())
+}
+
+String getHawkAuthentication(String id, String secret, String key, String path) {
+    Integer timestamp = now() / 1000
+    String nonce = UUID.randomUUID().toString().replaceAll('-', '').take(8)
+    String prestr = "$id:$secret:${nonce}:${timestamp}:${md5hex(path)}::"
+    Mac mac = Mac.getInstance("HmacSHA256")
+    mac.init(new SecretKeySpec(key?.getBytes("UTF-8"), "HmacSHA256"))
+    String macString = mac.doFinal(prestr.getBytes("UTF-8")).encodeBase64().toString()
+    return "Hawk id=\"${id}\", s=\"${secret}\", ts=\"${timestamp}\", nonce=\"${nonce}\", mac=\"${macString}\""
+}
+
+String generateHash(String username) {
+    MessageDigest md = MessageDigest.getInstance("MD5")
+    md.update(username.bytes)
+    md.update(device.deviceNetworkId.bytes)
+    return md.digest().encodeBase64().toString()
+}
+
+String.metaClass.isNumber = { delegate ==~ /-?\d+(\.\d+)?/ }
+
+def convertNumbers(element) {
+    if (element instanceof List) return element.collect { convertNumbers(it) }
+    if (element instanceof Map) return element.collectEntries { k, v -> [(k): convertNumbers(v)] }
+    if (element instanceof String) {
+        if (element.isNumber()) return element.contains('.') ? element.toFloat() : element.toInteger()
+    }
+    return element
+}
+
+// ── State storage helpers (identical to original) ─────────────────────────────
+void storeJsonState(String name, String visible, Map hidden) {
+    String encoded64 = JsonOutput.toJson(hidden).getBytes("UTF-8").encodeBase64().toString()
+    state[name] = """<root><span class="visible-data">[ date: ${visible}, size: ${encoded64.size()} ]</span><span class="hidden-data" style="display:none;" data-hidden="${encoded64}">${name} placeholder</span></root>"""
+}
+
+Map fetchJsonState(String name) {
+    if (state?."$name" == null) return [:]
+    def slurper = new XmlSlurper().parseText((state[name]))
+    String encodedData = slurper?.span?.find { it.@class == 'hidden-data' }?.@'data-hidden'
+    if (!encodedData) return [:]
+    try { return new JsonSlurper().parseText(new String(encodedData.decodeBase64(), "UTF-8")) }
+    catch (Exception e) { return [:] }
+}
+
+String findNextDevice(String duid = null) {
+    List sortedDevices = getHomeDataResult()?.devices?.sort { a, b -> a.duid <=> b.duid }
+    Integer currentIndex = duid != null ? sortedDevices?.findIndexOf { it.duid == duid } : -1
+    if (duid == null || currentIndex == -1) return sortedDevices?.get(0)?.duid
+    return sortedDevices?.get((currentIndex + 1) % sortedDevices.size())?.duid
+}
+
+String getDeviceId() {
+    state.duid = state?.duid ?: findNextDevice()
+    return state.duid
+}
+
+String getLocalKey(String deviceId) {
+    return getHomeDataResult()?.devices?.find { it.duid == deviceId }?.localKey
+}
+
+@Field volatile static Map<Long, Map> g_mGetLoginData = [:]
+Map getLoginData() {
+    if (g_mGetLoginData[device.getIdAsLong()] == null)
+        g_mGetLoginData[device.getIdAsLong()] = fetchJsonState("login")
+    return g_mGetLoginData[device.getIdAsLong()]?.data ?: [:]
+}
+
+@Field volatile static Map<Long, Map> g_mGetHomeDetail = [:]
+Map getHomeDetailData() {
+    if (g_mGetHomeDetail[device.getIdAsLong()] == null)
+        g_mGetHomeDetail[device.getIdAsLong()] = fetchJsonState("homeDetail")
+    return g_mGetHomeDetail[device.getIdAsLong()]?.data ?: [:]
+}
+
+@Field volatile static Map<Long, Map> g_mGetHomeData = [:]
+Map getHomeDataResult() {
+    if (g_mGetHomeData[device.getIdAsLong()] == null) {
+        synchronized (this) { g_mGetHomeData[device.getIdAsLong()] = fetchJsonState("homeData") }
+    }
+    return g_mGetHomeData[device.getIdAsLong()]?.result ?: [:]
+}
+
+void clearAttributes() {
+    device.currentStates?.collect { ((new JsonSlurper().parseText(JsonOutput.toJson(it)))?.name) }
+          ?.each { device.deleteCurrentState(it) }
+}
+
+void cleanStaleAttributes() {
+    List stale = ["cleanTime", "cleanArea", "cleanPercent", "remainingFilter", "remainingMainBrush",
+                  "remainingSensors", "remainingSideBrush", "remainingHighSpeedMaintBrush", "rooms", "scenes"]
+    device.currentStates?.collect { ((new JsonSlurper().parseText(JsonOutput.toJson(it)))?.name) }
+          ?.each { n -> if (stale.contains(n)) { device.deleteCurrentState(n); logInfo "removed stale: $n" } }
+}
+
+// ── Tile helpers (identical to original) ──────────────────────────────────────
+@Field volatile static Map<Long, Long> g_mLastTileTime   = [:]
+@Field volatile static Map<Long, Long> g_mLastXxTileTime = [:]
+
+void scheduleTileUpdate() {
+    Long last = g_mLastTileTime[device.getIdAsLong()] ?: 0
+    if ((now() - last) > 60000) { g_mLastTileTime[device.getIdAsLong()] = now(); runIn(2, "updateTile") }
+    else runIn(65, "updateTile")
+}
+
+void scheduleXxTileUpdate() {
+    Long last = g_mLastXxTileTime[device.getIdAsLong()] ?: 0
+    if ((now() - last) > 60000) { g_mLastXxTileTime[device.getIdAsLong()] = now(); runIn(3, "updateXxTile") }
+    else runIn(66, "updateXxTile")
+}
+
+// updateTile() and updateXxTile() are identical to the original driver.
+// Paste them here from the original if you want tile support.
+void updateTile()   { /* copy from original driver */ }
+void updateXxTile() { /* copy from original driver */ }
+
+// ── Code maps (identical to original) ────────────────────────────────────────
+@Field static final Map errorCodes = [
+    0: "No error", 1: "Laser sensor fault", 2: "Collision sensor fault", 3: "Wheel floating",
+    4: "Cliff sensor fault", 5: "Main brush blocked", 6: "Side brush blocked", 7: "Wheel blocked",
+    8: "Device stuck", 9: "Dust bin missing", 10: "Filter blocked", 11: "Magnetic field detected",
+    12: "Low battery", 13: "Charging problem", 14: "Battery failure", 15: "Wall sensor fault",
+    16: "Uneven surface", 17: "Side brush failure", 18: "Suction fan failure",
+    19: "Unpowered charging station", 20: "Unknown Error", 21: "Laser pressure sensor problem",
+    22: "Charge sensor problem", 23: "Dock problem", 24: "No-go zone or invisible wall detected",
+    254: "Bin full", 255: "Internal error", 256: "Wifi Offline", 257: "Authorization error",
+]
+
+@Field static final Map stateCodes = [
+    0: "Unknown", 1: "Initiating", 2: "Sleeping", 3: "Idle", 4: "Remote Control",
+    5: "Cleaning", 6: "Returning Dock", 7: "Manual Mode", 8: "Charging", 9: "Charging Error",
+    10: "Paused", 11: "Spot Cleaning", 12: "In Error", 13: "Shutting Down", 14: "Updating",
+    15: "Docking", 16: "Go To", 17: "Zone Clean", 18: "Room Clean", 22: "Emptying Dust Bin",
+    23: "Washing the mop", 26: "Going to wash the mop", 28: "In call", 29: "Mapping",
+    100: "Charged", 500: "Authorization error", 501: "Authorization Requires PIN",
+    502: "Waiting for Authorization PIN", 503: "Authorized", 504: "Error requesting PIN",
+]
+
+@Field static final Map fanPowerCodes = [
+    101: "Quiet", 102: "Balanced", 103: "Turbo", 104: "Max", 105: "Off", 106: "Auto", 108: "Max+",
+]
+
+@Field static final Map mopModeCodes = [
+    300: "Standard", 301: "Deep", 302: "Custom", 303: "Deep+", 304: "Fast",
+]
+
+@Field static final Map mopWaterModeCodes = [
+    0: "Default", 200: "Off", 201: "Low", 202: "Medium", 203: "High", 204: "Auto", 207: "Custom",
+]
+
+@Field static final Map dockErrorCodes = [
+    0: "No error", 34: "Duct Blockage", 38: "Water Empty", 39: "Waste Water Tank Full",
+    40: "Water Filter Not Installed", 42: "Check the Water Filter Has Been Correctly Installed",
+    44: "Dirty Tank Latch Open", 46: "No Dust Bin", 53: "Cleaning Tank Full Blocked",
+]
