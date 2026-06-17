@@ -22,8 +22,10 @@
  *  PATCH: debounce offline events — healthStatus only fires offline after
  *         sustained disconnect, not on brief MQTT reconnects.
  *         Added offlineThreshold preference (default 120s).
+ *  PATCH: added newer model DPS codes to processEvent to suppress
+ *         spurious logWarn events on unsupported/unknown codes.
  */
-public static String version() {return "1.1.12d"}
+public static String version() {return "1.1.12e"}
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
@@ -589,6 +591,18 @@ void processEvent(String name, def value) {
     case "back_type":
     case "replenish_mode":
     case "repeat":
+        break
+    // ── Newer model DPS codes — silenced to prevent spurious warnings ─────
+    case "voice_chat_status":
+    case "subdivision_sets":
+    case "sub_error_code":
+    case "seq_type":
+    case "pet_reminding":
+    case "monitor_status":
+    case "extra_time":
+    case "exit_dock":
+    case "dtof_status":
+    case "cleaning_info":
         break
     default:
         if(settings?.deviceDebugEnable) logWarn "did not process name:$name with value:$value"     
