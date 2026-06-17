@@ -229,8 +229,45 @@ def discoverDevices() {
     runIn(2, "createChildDevices")
 }
 
+// ── Driver preflight check ────────────────────────────────────────────────────
+Boolean driverIsInstalled() {
+    try {
+        // Attempt to find the driver by namespace + name.
+        // addChildDevice throws if the driver doesn't exist — we catch that to detect absence.
+        // We use a dummy DNI that won't conflict; we delete it immediately if it gets created.
+        String testDni = "roborock-driver-check-${now()}"
+        def testDev = addChildDevice("bloodtick-local", "Roborock Vacuum (Local TCP)", testDni,
+                                     [name: "__drivercheck__", isComponent: true])
+        // If we get here the driver IS installed — clean up the test device
+        deleteChildDevice(testDni)
+        return true
+    } catch (Exception e) {
+        String msg = e.message?.toLowerCase() ?: ""
+        if (msg.contains("not found") || msg.contains("driver") || msg.contains("no driver")) {
+            return false
+        }
+        // Some other error (e.g. device already exists) — driver is probably installed
+        logDebug "driverIsInstalled check exception (non-driver): ${e.message}"
+        return true
+    }
+}
+
 def createChildDevices() {
     logInfo "createChildDevices()"
+
+    // ── Preflight: verify driver is installed ─────────────────────────────────
+    if (!driverIsInstalled()) {
+        logError "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        logError "DRIVER NOT FOUND: \'Roborock Vacuum (Local TCP)\' is not installed."
+        logError "Please go to Hubitat → Drivers Code → New Driver and paste the"
+        logError "RoborockLocalTCP_Driver.groovy code, then Save."
+        logError "After installing the driver, go to Apps → Roborock Local TCP"
+        logError "and click Done/Save again to retry device creation."
+        logError "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        return
+    }
+    logInfo "Driver check passed — \'Roborock Vacuum (Local TCP)\' is installed"
+
     List vacuums = state?.vacuums ?: []
 
     vacuums.each { v ->
@@ -978,4 +1015,3 @@ def logInfo(msg)  { if (settings?.logEnable   != false) log.info  "${app.name} $
 def logDebug(msg) { if (settings?.debugEnable == true)  log.debug "${app.name} ${msg}" }
 def logWarn(msg)  { log.warn  "${app.name} ${msg}" }
 def logError(msg) { log.error "${app.name} ${msg}" }
-
