@@ -22,7 +22,7 @@
  *  ── SHELVED: Waiting on Hubitat platform update ──────────────────────────────
  *  STATUS: interfaces.rawSocket parse() does NOT fire on binary TCP responses
  *          from the vacuum. Commands send successfully but responses are silently
- *          dropped by Hubitat — confirmed via packet capture (data reaches hub).
+ *          dropped by Hubitat — confirmed by testLocalRaw diagnostic showing no parse() callback after a successful send.
  *
  *  WHAT NEEDS TO CHANGE WHEN HE ADDS SUPPORT:
  *    - Replace interfaces.rawSocket.sendMessage() in localExecute() with the
