@@ -26,7 +26,7 @@
  * Do NOT create this driver manually — it is managed by the parent.
  *
  * Changelog:
- *   - 1.2.1: Only send an event when the value actually changed from the
+ *   - 1.2.0: Only send an event when the value actually changed from the
  *     device's current attribute value. A single WS panel snapshot (e.g.
  *     right after a reconnect) can carry every breaker/CT at once; resending
  *     all ~15 attributes per breaker unconditionally on every update was
@@ -43,7 +43,7 @@ metadata {
         namespace  : "jdthomas24",
         author     : "Community Port from rwoldberg/ldata-ha",
         description: "Child device for Leviton Smart Panel breaker or CT sensor",
-        version    : "1.2.1"
+        version    : "1.2.0"
     ) {
         // Core capabilities
         capability "Switch"           // on/off = breaker reset/trip
@@ -148,47 +148,42 @@ def parse(List<Map> events) {
         try {
             def name  = evt.name
             def value = evt.value
+            def v     = null   // reusable scratch var for rounded numeric values
 
             switch (name) {
                 // ── Core power attributes ──────────────────────────────────
-                case "power": {
-                    def v = roundSafe(value, 1)
+                case "power":
+                    v = roundSafe(value, 1)
                     if (changed("power", v)) sendEvent(name: "power", value: v, unit: "W")
                     break
-                }
 
-                case "current": {
-                    def v = roundSafe(value, 3)
+                case "current":
+                    v = roundSafe(value, 3)
                     if (changed("amperage", v)) sendEvent(name: "amperage", value: v, unit: "A")
                     break
-                }
 
-                case "voltage": {
-                    def v = roundSafe(value, 1)
+                case "voltage":
+                    v = roundSafe(value, 1)
                     if (changed("voltage", v)) sendEvent(name: "voltage", value: v, unit: "V")
                     break
-                }
 
-                case "frequency": {
-                    def v = roundSafe(value, 2)
+                case "frequency":
+                    v = roundSafe(value, 2)
                     if (changed("frequency", v)) sendEvent(name: "frequency", value: v, unit: "Hz")
                     break
-                }
 
                 // ── Energy ────────────────────────────────────────────────
-                case "energyConsumption": {
-                    def v = roundSafe(value, 3)
+                case "energyConsumption":
+                    v = roundSafe(value, 3)
                     // Map to both the standard capability attribute and our custom one
                     if (changed("energy", v))            sendEvent(name: "energy",            value: v, unit: "kWh")
                     if (changed("energyConsumption", v)) sendEvent(name: "energyConsumption", value: v, unit: "kWh")
                     break
-                }
 
-                case "energyImport": {
-                    def v = roundSafe(value, 3)
+                case "energyImport":
+                    v = roundSafe(value, 3)
                     if (changed("energyImport", v)) sendEvent(name: "energyImport", value: v, unit: "kWh")
                     break
-                }
 
                 // ── Switch / state ────────────────────────────────────────
                 case "switch":
@@ -198,6 +193,7 @@ def parse(List<Map> events) {
                 case "breakerState":
                     if (changed("breakerState", value)) sendEvent(name: "breakerState", value: value)
                     break
+
 
                 case "remoteState":
                     if (changed("remoteState", value)) sendEvent(name: "remoteState", value: value)
@@ -220,11 +216,10 @@ def parse(List<Map> events) {
                     if (changed("poles", value)) sendEvent(name: "poles", value: value)
                     break
 
-                case "canRemoteOn": {
-                    def v = value?.toString()
+                case "canRemoteOn":
+                    v = value?.toString()
                     if (changed("canRemoteOn", v)) sendEvent(name: "canRemoteOn", value: v)
                     break
-                }
 
                 case "breakerModel":
                     if (changed("breakerModel", value)) sendEvent(name: "breakerModel", value: value)
@@ -277,3 +272,4 @@ private def roundSafe(def value, int decimals) {
 private void logDebug(String msg) {
     if (settings.debugLogging) log.debug msg
 }
+
