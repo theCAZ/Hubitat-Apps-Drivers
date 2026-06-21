@@ -26,7 +26,7 @@
  * Do NOT create this driver manually — it is managed by the parent.
  *
  * Changelog:
- *   - 1.2.0: Only send an event when the value actually changed from the
+ *   - 1.2.1: Only send an event when the value actually changed from the
  *     device's current attribute value. A single WS panel snapshot (e.g.
  *     right after a reconnect) can carry every breaker/CT at once; resending
  *     all ~15 attributes per breaker unconditionally on every update was
@@ -43,7 +43,7 @@ metadata {
         namespace  : "jdthomas24",
         author     : "Community Port from rwoldberg/ldata-ha",
         description: "Child device for Leviton Smart Panel breaker or CT sensor",
-        version    : "1.2.0"
+        version    : "1.2.1"
     ) {
         // Core capabilities
         capability "Switch"           // on/off = breaker reset/trip
@@ -254,7 +254,7 @@ def parse(List<Map> events) {
 //  UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
 
-// v1.2.0: Skip sending an event if the new value matches what's already
+// v1.2.1: Skip sending an event if the new value matches what's already
 // stored — string comparison avoids Float/BigDecimal/String type mismatches
 // between what currentValue() returns and what we're about to send.
 private boolean changed(String attr, def newVal) {
@@ -272,3 +272,4 @@ private def roundSafe(def value, int decimals) {
 private void logDebug(String msg) {
     if (settings.debugLogging) log.debug msg
 }
+
