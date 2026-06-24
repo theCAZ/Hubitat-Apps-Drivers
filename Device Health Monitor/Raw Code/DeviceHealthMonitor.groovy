@@ -1,6 +1,6 @@
 /**
  * Device Health Monitor
- * Version: 1.5.8
+ * Version: 1.5.9
  *
  * Author: jdthomas24
  */
@@ -14,7 +14,7 @@ definition(
     importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.5.8",
+    version: "1.5.9",
     doNotFocus: true,
     oauth: true
 )
@@ -401,8 +401,15 @@ def getPingStatus(deviceId) {
 }
 
 def getPingStatusDisplay(deviceId) {
+    def cap = state.deviceCapabilities?.get(deviceId as String) ?: [:]
     switch (getPingStatus(deviceId)) {
-        case "verified":     return "<span style='color:#22c55e;font-size:10px;font-weight:bold;'>✅ Verified</span>"
+        case "verified":
+            // v1.5.9: distinguish provisional ("weak") verification — a refresh/ping
+            // that merely didn't throw — from "confirmed" (a real lastSeen advance,
+            // state event, or Hue/Konnected bridge round-trip).
+            return cap.pingTrustSource == "weak"
+                ? "<span style='color:#0ea5e9;font-size:10px;font-weight:bold;'>🔄 Verified (auto)</span>"
+                : "<span style='color:#22c55e;font-size:10px;font-weight:bold;'>✅ Verified</span>"
         case "unverifiable": return "<span style='color:#94a3b8;font-size:10px;'>⚠ Cannot verify</span>"
         case "declared":     return "<span style='color:#f97316;font-size:10px;'>🔄 Verifiable</span>"
         default:             return ""
@@ -418,6 +425,20 @@ def isQuietVerified(deviceId) {
     if (h != "Fair") return false
     def cap = state.deviceCapabilities?.get(deviceId as String) ?: [:]
     return cap.pingWorks == true
+}
+
+// v1.5.9: A successful generic refresh()/ping() does NOT prove a Zigbee/Z-Wave
+// device actually received the command — Hubitat hands the command to the
+// mesh and returns success regardless of delivery, unlike a Hue Bridge or
+// Konnected Panel poll, which is a real network round-trip. So a successful
+// generic refresh/ping is only "weak" trust: good enough to avoid nagging
+// about an idle-but-probably-fine device, but not good enough to trust
+// forever. Weak trust is capped at 2x the Offline Threshold — long enough to
+// ride out normal quiet periods, short enough to guarantee the device can
+// never be silently masked forever. See updateHealth() for where this is
+// enforced and where it's cleared by genuine confirmation.
+def getWeakTrustCeilingMs() {
+    return ((settings?.offlineThresholdHours ?: 168) * 3600000L) * 2
 }
 
 // ============================================================
@@ -1258,7 +1279,7 @@ def mainPage() {
             input "debugMode", "bool",
                   title: "Debug Logging (auto-disables after 30 min)",
                   defaultValue: false, submitOnChange: true
-            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.8</span>"
+            paragraph "<span style='color:#94a3b8; font-size:11px;'>Device Health Monitor v1.5.9</span>"
         }
     }
 }
@@ -1777,6 +1798,11 @@ def processScanChunk() {
                         capDataRec.pingWorks     = true
                         capDataRec.pingFailed    = 0
                         capDataRec.pingAttempted = false
+                        // v1.5.9: a genuine lastSeen advance is real confirmation —
+                        // upgrade trust source and clear any weak-trust ceiling/cooldown.
+                        capDataRec.pingTrustSource        = "confirmed"
+                        capDataRec.weakTrustFirstGranted   = null
+                        capDataRec.weakTrustCooldownUntil  = null
                         capMapRec[capKeyRec]     = capDataRec
                         state.deviceCapabilities = capMapRec
                         if (debugEnabled()) log.debug "${device.displayName}: ping confirmed working — device responded after verification attempt"
@@ -1935,24 +1961,56 @@ def updateHealth(device) {
     // battery-dead or truly offline devices are not permanently masked behind
     // "Quiet verified reachable". The fairHold gate then gets a fresh cycle to
     // attempt re-verification before the device escalates to Poor or Offline.
+    // v1.5.9: "confirmed" trust (a real lastSeen advance, a real state event,
+    // or a Hue/Konnected bridge round-trip) behaves exactly as before. "weak"
+    // trust (a generic refresh()/ping() that merely didn't throw) gets the
+    // same one-cycle-at-a-time renewal below, but ALSO has its own ceiling —
+    // if it's been running purely on weak trust for getWeakTrustCeilingMs()
+    // (default 2x Offline Threshold) with zero genuine confirmation, trust is
+    // force-cleared and a cooldown is set so the device is guaranteed to show
+    // a real Poor/Offline for a full Offline Threshold window before weak
+    // trust can be granted again. This is what stops a never-confirmed device
+    // from being masked as "Quiet" forever.
     if (currentHealth in ["Poor", "Offline"]) {
         def capChk = state.deviceCapabilities?.get(id as String) ?: [:]
         if (capChk.pingWorks == true) {
+            def isWeak        = capChk.pingTrustSource == "weak"
+            def weakCeilingMs = getWeakTrustCeilingMs()
+            def weakExceeded  = isWeak && capChk.weakTrustFirstGranted &&
+                                 (now() - (capChk.weakTrustFirstGranted as Long)) >= weakCeilingMs
+
             def pingAge      = now() - (capChk.lastPingAttempt as Long ?: 0)
             def maxPingAgeMs = ((settings?.offlineThresholdHours ?: 168) * 3600000L)
-            if (pingAge < maxPingAgeMs) {
+
+            if (weakExceeded) {
+                def capMap  = state.deviceCapabilities ?: [:]
+                def capData = capMap[id as String] ?: [:]
+                capData.pingWorks              = null
+                capData.pingFailed             = 0
+                capData.pingTrustSource        = null
+                capData.weakTrustFirstGranted  = null
+                // Guarantee at least one full Offline Threshold window of real
+                // visibility before weak trust can mask this device again.
+                capData.weakTrustCooldownUntil = now() + maxPingAgeMs
+                capMap[id as String] = capData
+                state.deviceCapabilities = capMap
+                if (debugEnabled()) log.debug "${device.displayName}: weak trust ceiling reached (${(weakCeilingMs/3600000).round(0)}h) with no genuine confirmation — forcing real ${currentHealth} for at least ${(maxPingAgeMs/3600000).round(0)}h"
+                // currentHealth stays Poor/Offline this cycle — fairHold was already evaluated above
+            } else if (pingAge < maxPingAgeMs) {
                 // Trust still valid — cap at Fair, display as Quiet
                 state.health[id] = "Fair"
                 currentHealth    = "Fair"
-                if (debugEnabled()) log.debug "${device.displayName}: capped at Fair — verified reachable (ping age ${(pingAge/3600000).round(1)}h)"
+                if (debugEnabled()) log.debug "${device.displayName}: capped at Fair — verified reachable (ping age ${(pingAge/3600000).round(1)}h, trust=${capChk.pingTrustSource ?: 'confirmed'})"
             } else {
-                // Trust expired — null out pingWorks so fairHold gets a fresh attempt
+                // Trust expired — null out pingWorks so fairHold gets a fresh attempt.
+                // weakTrustFirstGranted is deliberately preserved here (not cleared) so
+                // the cumulative weak-trust clock keeps running across repeated
+                // re-verification cycles instead of resetting every time.
                 def capMap  = state.deviceCapabilities ?: [:]
-                def capKey  = id as String
-                def capData = capMap[capKey] ?: [:]
+                def capData = capMap[id as String] ?: [:]
                 capData.pingWorks  = null
                 capData.pingFailed = 0
-                capMap[capKey]     = capData
+                capMap[id as String] = capData
                 state.deviceCapabilities = capMap
                 if (debugEnabled()) log.debug "${device.displayName}: pingWorks trust expired (${(pingAge/3600000).round(1)}h old) — clearing for fresh verification"
                 // currentHealth stays Poor/Offline — fairHold was already evaluated above
@@ -1975,6 +2033,11 @@ def updateHealth(device) {
     // clear pingWorks so it gets a fresh verification attempt next time it drops.
     // This prevents devices from being permanently stuck as Unverifiable after
     // a single bad attempt — seasonal/sporadic devices benefit most from this.
+    // v1.5.9: a real recovery to Good/Excellent only happens via a genuine
+    // lastSeen advance, so it's also genuine confirmation — always clear any
+    // weak-trust ceiling/cooldown tracking too (previously this only wrote
+    // capMapR back when pingWorks was false, silently leaving stale weak-trust
+    // timestamps behind on the unconditional path).
     if (currentHealth in ["Good", "Excellent"] && prevHealth in ["Poor", "Offline"]) {
         def capMapR  = state.deviceCapabilities ?: [:]
         def capKeyR  = id as String
@@ -1982,10 +2045,13 @@ def updateHealth(device) {
         if (capDataR.pingWorks == false) {
             capDataR.pingWorks  = null
             capDataR.pingFailed = 0
-            capMapR[capKeyR]    = capDataR
-            state.deviceCapabilities = capMapR
             if (debugEnabled()) log.debug "${device.displayName}: health recovered to ${currentHealth} — verification status reset for fresh re-evaluation"
         }
+        capDataR.pingTrustSource        = "confirmed"
+        capDataR.weakTrustFirstGranted  = null
+        capDataR.weakTrustCooldownUntil = null
+        capMapR[capKeyR]    = capDataR
+        state.deviceCapabilities = capMapR
     }
 
     if (!state.prevHealth) state.prevHealth = [:]
@@ -2012,6 +2078,17 @@ def updateHealth(device) {
     if (getStateVerified(id as String)) {
         state.verifying[id] = "state_verified"
         log.info "Device Health Monitor: ${currentHealth} — ${device.displayName} self-verified via state change event (no ping needed)"
+        // v1.5.9: a real state-change event is genuine confirmation too —
+        // clear any weak-trust ceiling/cooldown tracking.
+        def capMapSV  = state.deviceCapabilities ?: [:]
+        def capDataSV = capMapSV[id as String] ?: [:]
+        if (capDataSV.pingTrustSource == "weak" || capDataSV.weakTrustFirstGranted || capDataSV.weakTrustCooldownUntil) {
+            capDataSV.pingTrustSource        = "confirmed"
+            capDataSV.weakTrustFirstGranted  = null
+            capDataSV.weakTrustCooldownUntil = null
+            capMapSV[id as String] = capDataSV
+            state.deviceCapabilities = capMapSV
+        }
         if (data?.samples?.size() > 0) {
             data.samples.remove(data.samples.size() - 1)
             if (data.samples.size() >= 3) {
@@ -2097,6 +2174,11 @@ def updateHealth(device) {
         capDataH.pingAttempted      = false
         capDataH.pingWorks          = true
         capDataH.pingFailed         = 0
+        // v1.5.9: a Bridge/Panel refresh is a real network round-trip — mark
+        // as "confirmed" trust, which has no weak-trust ceiling.
+        capDataH.pingTrustSource        = "confirmed"
+        capDataH.weakTrustFirstGranted  = null
+        capDataH.weakTrustCooldownUntil = null
         // Apply the Quiet cap immediately within this same scan instead of
         // waiting for the next one to notice pingWorks=true — this is what
         // lets a single Force Scan fully clear it instead of needing 2-3 taps.
@@ -2105,10 +2187,33 @@ def updateHealth(device) {
     } else if (verifyMethod in ["refresh", "ping"]) {
         capDataH.lastPingAttempt = now()
         capDataH.pingAttempted   = true
+        // v1.5.9: A generic refresh()/ping() that didn't throw is only "weak"
+        // proof of reachability — Hubitat hands the command to the mesh and
+        // returns success regardless of whether the device actually received
+        // it, unlike a Hue Bridge/Konnected Panel round-trip above. Grant the
+        // same immediate Quiet treatment, but tag it weak and start (or
+        // continue) the weak-trust clock, UNLESS this device is in a
+        // post-ceiling cooldown — in which case skip the grant entirely so
+        // the real Poor/Offline stays visible for the guaranteed window.
+        def inCooldown = capDataH.weakTrustCooldownUntil &&
+                         now() < (capDataH.weakTrustCooldownUntil as Long)
+        if (!inCooldown) {
+            if (capDataH.pingTrustSource != "weak" || !capDataH.weakTrustFirstGranted) {
+                capDataH.weakTrustFirstGranted = now()
+            }
+            capDataH.pingWorks       = true
+            capDataH.pingTrustSource = "weak"
+            capDataH.pingFailed      = 0
+            state.health[id] = "Fair"
+            if (debugEnabled()) log.debug "${device.displayName}: ${verifyMethod} succeeded — granting provisional Quiet status pending genuine confirmation"
+        } else if (debugEnabled()) {
+            log.debug "${device.displayName}: ${verifyMethod} succeeded but in post-ceiling cooldown — holding at real ${currentHealth} for visibility"
+        }
     } else if (verifyMethod in ["none", "virtual", "hue_no_bridge", "hue_bridge_failed",
                                  "konnected_no_panel", "konnected_panel_failed", "failed"]) {
-        capDataH.pingWorks  = false
-        capDataH.pingFailed = (capDataH.pingFailed ?: 0) + 1
+        capDataH.pingWorks       = false
+        capDataH.pingFailed      = (capDataH.pingFailed ?: 0) + 1
+        capDataH.pingTrustSource = null
     }
     capMapH[capKeyH]         = capDataH
     state.deviceCapabilities = capMapH
@@ -2174,10 +2279,17 @@ def getHealthDisplay(device) {
             def lowSuffix   = (lowActivity && !extStateTag) ? " <span style='color:#94a3b8;font-size:10px;'>ℹ️ Low Activity Device</span>" : ""
             def healthEmoji = h == "Fair" ? "🟠" : "🟢"
             // v1.5.6: Verified + Fair devices display as "Quiet" — reachable but idle
+            // v1.5.9: distinguish "weak" (provisional, refresh/ping didn't throw) from
+            // "confirmed" (real lastSeen advance, state event, or Hue/Konnected bridge)
             def capChk      = state.deviceCapabilities?.get(device.id as String) ?: [:]
             def isVerified  = capChk.pingWorks == true
+            def isWeakTrust = capChk.pingTrustSource == "weak"
             def displayLabel = (h == "Fair" && isVerified) ? "Quiet" : h
-            def quietSuffix  = (h == "Fair" && isVerified) ? " <span style='color:#94a3b8;font-size:10px;'>verified reachable</span>" : ""
+            def quietSuffix  = (h == "Fair" && isVerified)
+                ? (isWeakTrust
+                    ? " <span style='color:#94a3b8;font-size:10px;'>responded to refresh — unconfirmed</span>"
+                    : " <span style='color:#94a3b8;font-size:10px;'>verified reachable</span>")
+                : ""
             return "${healthEmoji} ${displayLabel}${extStateTag}${lowSuffix}${quietSuffix}"
         default: return "${h}"
     }
@@ -2347,6 +2459,7 @@ def serveDataEndpoint() {
             def verifyMethod = state.verifying?.get(device.id)
             def hasOverride  = settings["protocolOverride_${device.id}"] &&
                                settings["protocolOverride_${device.id}"] != "Auto-detect"
+            def trustSource  = state.deviceCapabilities?.get(device.id as String)?.pingTrustSource ?: ""
 
             [
                 id:              device.id,
@@ -2367,6 +2480,7 @@ def serveDataEndpoint() {
                 location:        loc,
                 description:     desc,
                 pingStatus:      getPingStatus(device.id),
+                pingTrustSource: trustSource,
                 repeatDrops:     isRepeatDrops(device.id as String),
                 extStateTag:     getExtendedStateTag(device),
                 verifyMethod:    verifyMethod ?: "",
@@ -2503,6 +2617,16 @@ function healthLabel(dev) {
         else if (vm === 'konnected_panel_failed')  vSuffix = ' <span style="color:#94a3b8;font-size:10px;">⚠ Konnected Panel refresh failed</span>';
         return icon + ' ' + h + suffix + vSuffix;
     }
+
+    // v1.5.9: Fair + verified devices show as "Quiet" here too, matching the
+    // Hubitat app page — previously the portal only used this distinction for
+    // summary counts/filtering (isQuiet), never in the label text itself.
+    if (h === 'Fair' && dev.pingStatus === 'verified') {
+        let quietSuffix = dev.pingTrustSource === 'weak'
+            ? ' <span style="color:#94a3b8;font-size:10px;">responded to refresh — unconfirmed</span>'
+            : ' <span style="color:#94a3b8;font-size:10px;">verified reachable</span>';
+        return icon + ' Quiet' + suffix + quietSuffix;
+    }
     return icon + ' ' + h + suffix;
 }
 
@@ -2524,7 +2648,9 @@ function protoTag(dev) {
 function card(dev) {
     let locDesc = [];
     if (dev.location) locDesc.push('🏷️ ' + dev.location);
-    let pingTag = dev.pingStatus === 'verified' ? "<span style='color:#22c55e;font-size:10px;'>✅ Verified</span>" :
+    let pingTag = dev.pingStatus === 'verified' ? (dev.pingTrustSource === 'weak'
+                    ? "<span style='color:#0ea5e9;font-size:10px;'>🔄 Verified (auto)</span>"
+                    : "<span style='color:#22c55e;font-size:10px;'>✅ Verified</span>") :
                   dev.pingStatus === 'unverifiable' ? "<span style='color:#94a3b8;font-size:10px;'>⚠ Cannot verify</span>" :
                   dev.pingStatus === 'declared' ? "<span style='color:#f97316;font-size:10px;'>🔄 Verifiable</span>" : '';
     if (dev.description) locDesc.push('📝 ' + dev.description);
@@ -3423,7 +3549,7 @@ def infoPage(Map params = [:]) {
                       "<tr><td style='padding:4px 8px;'>🟢 Excellent</td><td style='padding:4px 8px;'>Checking in within 1.5× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟢 Good</td><td style='padding:4px 8px;'>Checking in within 3× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟠 Fair</td><td style='padding:4px 8px;'>Checking in within 6× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🟠 Quiet</td><td style='padding:4px 8px;'>Fair health but verified reachable — device is idle, not unreachable. Verification trust expires after the offline threshold (v1.5.7).</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>🟠 Quiet</td><td style='padding:4px 8px;'>Fair health but reachability has been confirmed — device is idle, not unreachable. Two flavors: <b>verified reachable</b> (a real check-in, state event, or Hue/Konnected Bridge round-trip — trusted indefinitely, re-checked every Offline Threshold) and <b>responded to refresh — unconfirmed</b> (a plain Zigbee/Z-Wave refresh/ping that didn't throw, which isn't proof the device actually received it — see Verification section below). The unconfirmed kind is capped at 2× the Offline Threshold, after which it's forced to show a real Poor/Offline for a full Offline Threshold window before it can go Quiet again — so a device that never genuinely checks in can't be masked forever.</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🔴 Poor</td><td style='padding:4px 8px;'>Checking in beyond 6× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>💀 Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity unverifiable devices are capped at Poor.</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>😴 Snoozed</td><td style='padding:4px 8px;'>Excluded from notifications for a set duration</td></tr>" +
@@ -3450,7 +3576,12 @@ def infoPage(Map params = [:]) {
                       "<b>Verification trust expiry (v1.5.7):</b> Quiet/verified status expires after your configured Offline Threshold (default 7 days). If a device goes quiet and the last successful ping is older than this window, trust is cleared and the app re-verifies from scratch — preventing dead battery devices from being permanently masked as Quiet.<br><br>" +
                       "<b>Auto-reset on recovery:</b> When a device recovers from Poor or Offline back to Good or Excellent, its verification status is automatically reset so it always gets a fresh attempt next time it drops.<br><br>" +
                       "<b>Hue devices (v1.5.8):</b> Add your Hue Bridge to monitored devices — the app refreshes the Bridge when any Hue device goes Poor or Offline. Because a Bridge poll returns each bulb's full current state regardless of whether it changed, a successful Bridge refresh now confirms the bulb as reachable immediately, instead of waiting for a Hubitat event that may never fire when the value is unchanged.<br><br>" +
-                      "<b>Konnected devices (v1.5.8):</b> Add your Konnected Alarm Panel to monitored devices — child sensors are verified by refreshing the panel, with the same immediate confirmation as Hue above.</div>"
+                      "<b>Konnected devices (v1.5.8):</b> Add your Konnected Alarm Panel to monitored devices — child sensors are verified by refreshing the panel, with the same immediate confirmation as Hue above.<br><br>" +
+                      "<hr style='background-color:#eee; height:1px; border:0; margin:10px 0;'/>" +
+                      "<b>Why doesn't a plain Zigbee/Z-Wave refresh() or ping() confirm reachability the way Hue/Konnected does?</b><br>" +
+                      "It's a Hubitat platform limitation, not a bug in this app. A Hue Bridge or Konnected Panel refresh is a real network round-trip — the bridge actually talks to the device over the local LAN, and the call genuinely fails (times out / connection error) if the device is truly unreachable. A plain <code>device.refresh()</code> or <code>device.ping()</code> on a Zigbee or Z-Wave device, by contrast, just hands the command to the radio mesh and returns success immediately — Hubitat does not wait for, or expose, any delivery acknowledgment from the device itself. So \"the command didn't throw an error\" is not the same thing as \"the device received it.\" For a device that's gone fully silent (dead battery, fell off the mesh, unplugged), the mesh can sometimes still accept the command without complaint, even though nothing is actually listening on the other end.<br><br>" +
+                      "<b>Provisional Quiet status with a ceiling (v1.5.9):</b> Because of the above, a successful plain refresh/ping is treated as <i>provisional</i> (\"weak\") proof of reachability rather than full confirmation. It still gets the same immediate Quiet treatment as Hue/Konnected — so a device that's simply idle isn't falsely flagged — but it's capped at <b>2× your Offline Threshold</b> (default 14 days) of continuous unconfirmed trust. If a device rides on weak trust that whole time without ever once producing a genuine check-in, real state event, or other independent confirmation, trust is force-cleared and the device is guaranteed to show a real Poor/Offline status for at least <b>one full Offline Threshold</b> (default 7 days) before weak trust can be granted again. In the worst case (a device that is genuinely dead and never recovers), this repeats indefinitely — roughly 14 days masked, then 7 days correctly flagged, on and on — so a truly silent device can never be hidden from you forever, even though quiet-but-fine devices still get the breathing room they need day to day. A device that produces even one genuine confirmation at any point immediately upgrades to full (\"confirmed\") trust and the cycle stops.<br><br>" +
+                      "<b>Confirmed vs. provisional, at a glance:</b> the app/portal show <code>✅ Verified</code> / \"verified reachable\" for confirmed trust, and <code>🔄 Verified (auto)</code> / \"responded to refresh — unconfirmed\" for provisional weak trust, so you can tell at a glance which devices have actually proven themselves versus which are just coasting on a command that didn't error out.</div>"
         }
 
         section("<b>💡 Tips for Best Results</b>") {
@@ -3459,6 +3590,7 @@ def infoPage(Map params = [:]) {
                       "• Scheduled devices (lights, irrigation) self-verify via state changes — no configuration needed<br>" +
                       "• Verification status auto-resets on health recovery — no manual intervention needed for seasonal devices<br>" +
                       "• Quiet/verified trust expires after the offline threshold — dead battery devices will escalate correctly once trust expires<br>" +
+                      "• Plain Zigbee/Z-Wave refresh/ping devices now also go Quiet immediately when they respond — but that trust is provisional and capped at 2× the Offline Threshold, so a device that's actually gone silent will still surface as a real Poor/Offline periodically rather than being masked forever (see App Guide → Verification)<br>" +
                       "• Low activity devices that cannot be verified will show Poor instead of Offline — this is intentional<br>" +
                       "• Assign locations in the 🏷️ Location Assignment page — enables room grouping in the portal<br>" +
                       "• Add your Hue Bridge or CoCoHue Bridge to monitored devices for Hue verification support — bulbs that sit untouched for weeks will now confirm as Quiet/Verified from the Bridge poll alone<br>" +
@@ -3467,6 +3599,8 @@ def infoPage(Map params = [:]) {
 
         section("<b>📋 Version History</b>", hideable: true, hidden: true) {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
+                      "<b>v1.5.9</b> — Bug fix: quiet-but-fine Z-Wave/Zigbee devices stuck cycling Poor/Offline forever, with no bounded way to confirm a real outage<br>" +
+                      "<span style='color:#475569;font-size:12px;'>Generic <code>device.refresh()</code>/<code>device.ping()</code> only proves the mesh accepted the command — Hubitat does not wait for or expose any delivery acknowledgment from the device, unlike a Hue Bridge or Konnected Panel refresh, which is a real network round-trip. Previously this meant a quiet-but-reachable Z-Wave/Zigbee switch (one that rarely changes state, so <code>getLastActivity()</code> never advances after a refresh) had no path to Quiet status at all — it would cycle Poor → Offline forever even though refresh kept succeeding every scan. Generic refresh/ping success now gets the same immediate Fair-cap (\"Quiet\") treatment Hue/Konnected already had, but tagged as <i>provisional (\"weak\")</i> trust rather than full confirmation, since a clean refresh call still isn't proof of actual delivery. Weak trust is capped at 2× your Offline Threshold (default 14 days) of continuous unconfirmed riding; once exceeded, trust is force-cleared and the device is guaranteed to show a real Poor/Offline for at least one full Offline Threshold (default 7 days) before weak trust can be granted again — so a device that never once genuinely checks in can't be hidden from you forever, while devices that are simply idle still get the same breathing room as before. Any genuine confirmation (a real check-in, a real state-change event, or a Hue/Konnected bridge round-trip) immediately upgrades a device to full (\"confirmed\") trust, which has no ceiling — it's already covered by the existing v1.5.7 periodic re-verification. The app page, Activity Summary, Problem Devices page, and web portal all now show a distinct badge/label for provisional (\"🔄 Verified (auto)\" / \"responded to refresh — unconfirmed\") vs. confirmed (\"✅ Verified\" / \"verified reachable\") status, so it's clear at a glance which devices have actually proven themselves. Also fixed: the web portal's per-device label never showed \"Quiet\" for Fair+verified devices — it only used that distinction for the summary counts and Active Issues filtering — so the portal card text now matches the Hubitat app page. Also fixed: the auto-reset-on-recovery block only wrote capability data back when clearing a failed ping status, silently leaving stale weak-trust timestamps in place on every other recovery.</span><br><br>" +
                       "<b>v1.5.8</b> — Bug fix: Hue/Konnected bulbs and sensors that sit unused for weeks stuck at Offline/Verifiable<br>" +
                       "<span style='color:#475569;font-size:12px;'>Hue and Konnected verification works by refreshing the Bridge/Panel, not the device itself. A Bridge poll returns the full current state of every bulb whether or not it changed — but Hubitat's CoCoHue integration only emits a new event when a value actually changes. A bulb that's been off and untouched for weeks therefore never produced a fresh timestamp, so <code>pingWorks</code> never flipped to <code>true</code> even though the Bridge refresh itself was succeeding every time. A successful Bridge/Panel refresh is now treated as immediate proof of reachability — it stamps <code>pingWorks=true</code> directly instead of waiting for an event that may never come. <code>lastSeen</code> and learned baseline intervals are deliberately left untouched so this doesn't get recorded as a real check-in sample. The display now also updates within the same scan rather than the next one, and the old every-other-scan verification throttle was removed — so a single Force Scan fully resolves a Hue/Konnected device to ✅ Verified / 🟠 Quiet instead of needing 2-3 taps. Devices on the plain refresh/ping path still depend on the device itself responding, so those are unaffected by this change. Also fixed: Konnected devices that failed verification (no panel found, or panel refresh failed) weren't being marked Unverifiable — they now are. Active Issues (both the app page and the web portal) no longer lists Quiet/verified devices as problems — a confirmed-reachable idle device isn't an issue, so it's now grouped with healthy devices instead, and the Fair count in the summary no longer includes it.</span><br><br>" +
                       "<b>v1.5.7</b> — Bug fix: Stale ping verification masking dead battery devices<br>" +
