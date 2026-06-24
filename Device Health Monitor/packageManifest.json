@@ -1,12 +1,12 @@
 {
   "packageName": "Device Health Monitor",
   "author": "Jdthomas24",
-  "version": "1.5.8",
+  "version": "1.5.9",
   "category": "Monitoring",
   "description": "Monitor device check-in health across Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable — learns each device's normal pattern and alerts you when something goes quiet.",
   "dateReleased": "4/28/26",
   "minimumHEVersion": "2.3.0",
-  "releaseNotes": "v1.5.8 — Hue Bridge/Konnected Panel verification now confirms reachability immediately on a successful call and retries every scan instead of every other, resolving stuck devices in one Force Scan instead of 2-3 — also fixes Konnected devices not being marked Unverifiable on failed verification, and removes Quiet/verified devices from Active Issues in both the app and web portal.",
+  "releaseNotes": "v1.5.9 — Generic Zigbee/Z-Wave refresh/ping success now grants the same immediate Quiet status Hue/Konnected already had, tagged as provisional ('weak') trust since a successful command isn't real delivery confirmation — capped at 2x the Offline Threshold, after which the device is forced to show a real Poor/Offline for a full Offline Threshold window before weak trust can be granted again, so a device that never genuinely checks in can't be masked forever. Adds a confirmed-vs-provisional badge to the app pages and web portal, fixes the portal not showing 'Quiet' in the per-device label text, and fixes the recovery-reset block not always clearing trust tracking on a genuine recovery.",
   "apps": [
     {
       "id": "a045ac2b-5fe0-4159-830b-8550899d9553",
