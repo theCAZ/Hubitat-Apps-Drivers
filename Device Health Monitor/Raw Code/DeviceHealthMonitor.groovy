@@ -1882,7 +1882,7 @@ def finalizeScan() {
     state.scanStartTime = null
     state.tempResults   = []
     state.scanQueue     = []
-    log.info "Device Health Monitor: scan complete — all devices processed"
+//    log.info "Device Health Monitor: scan complete — all devices processed"
 }
 
 // ============================================================
