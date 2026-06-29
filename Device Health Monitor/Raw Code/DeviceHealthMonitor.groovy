@@ -1674,7 +1674,7 @@ def scanAllDevices() {
         return
     }
 
-    log.info "Device Health Monitor: scan started — ${devList.size()} device(s) queued"
+//    log.info "Device Health Monitor: scan started — ${devList.size()} device(s) queued"
     state.isScanning    = true
     state.scanStartTime = nowMs
     state.tempResults   = []
@@ -1724,7 +1724,7 @@ def processScanChunk() {
     def remaining    = queue.drop(chunkSize)
     state.scanQueue  = remaining
     def batchNum     = Math.ceil(totalDevices / chunkSize).toInteger() - Math.ceil(remaining.size() / chunkSize).toInteger()
-    log.info "Device Health Monitor: scanning batch ${batchNum} — ${chunk.size()} devices (${remaining.size()} remaining)"
+//    log.info "Device Health Monitor: scanning batch ${batchNum} — ${chunk.size()} devices (${remaining.size()} remaining)"
 
     def allDevs         = getAllMonitoredDevices()
     def intervalStr     = settings?.scanInterval ?: "3"
@@ -3494,12 +3494,13 @@ def scheduledSummary() {
     def body = "${prefix}📡 Device Health Summary\n"
 
     def sections = [
-        "Offline":   [emoji: "💀", enabled: settings?.notifyOffline   != false, list: []],
-        "Poor":      [emoji: "🔴", enabled: settings?.notifyPoor      != false, list: []],
-        "Fair":      [emoji: "🟠", enabled: settings?.notifyFair      != false, list: []],
-        "Good":      [emoji: "🟢", enabled: settings?.notifyGood      ?: false, list: []],
-        "Excellent": [emoji: "🟢", enabled: settings?.notifyExcellent ?: false, list: []]
+        "<u>&nbspOffline&nbsp</u>":   [emoji: "", enabled:         settings?.notifyOffline   != false, list: []],
+                "<u>&nbspPoor&nbsp</u>":      [emoji: "", enabled: settings?.notifyPoor      != false, list: []],
+                "<u>&nbspFair&nbsp</u>":      [emoji: "", enabled: settings?.notifyFair      != false, list: []],
+                "<u>&nbspGood&nbsp</u>":      [emoji: "🟢", enabled: settings?.notifyGood      ?: false, list: []],
+                "<u>&nbspExcellent&nbsp</u>": [emoji: "🟢", enabled: settings?.notifyExcellent ?: false, list: []]
     ]
+
 
     devList.each { device ->
         if (!isDeviceSnoozed(device.id as String)) {
@@ -3521,7 +3522,7 @@ def scheduledSummary() {
 
     sections.each { health, data ->
         if (data.enabled) {
-            body += "\n${data.emoji} ${health}:\n"
+            body += "\n${data.emoji} ${health}\n"
             if (data.list) { data.list.each { name -> body += "• ${name}\n" } }
             else { body += "None\n" }
         }
