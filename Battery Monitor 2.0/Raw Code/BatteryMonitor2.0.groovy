@@ -335,8 +335,8 @@ def mainPage() {
                       description: "Pushover-specific additions to the Battery Monitor notifications, e.g. [H][TITLE=Battery Report][HTML][SELFDESTRUCT=43200]",
                       required: false
                 paragraph "<b>Report Sections (choose which battery groups to include in notifications):</b>"
-                input "notifyPoor",      "bool", title: "🔴 Include Poor (≤25%)",                            defaultValue: true
-                input "notifyFair",      "bool", title: "🟠 Include Fair (26–70%)",                          defaultValue: true
+                input "notifyPoor",      "bool", title: " Include Poor (≤25%)",                            defaultValue: true
+                input "notifyFair",      "bool", title: " Include Fair (26–70%)",                          defaultValue: true
                 input "notifyGood",      "bool", title: "🟢 Include Good (71–99%)",                          defaultValue: false
                 input "notifyExcellent", "bool", title: "🟢 Include Excellent (100%)",                       defaultValue: false
                 input "notifyHighDrain", "bool", title: "⚠️ Include Health (Fair, Poor, & High Drain Only)", defaultValue: true
@@ -412,7 +412,7 @@ def scanAllDevices() {
     def devList = (autoDevices ?: []).findAll { !isIgnored(it) }
     if (!devList) return
     if (debugMode) log.debug "Running scheduled battery scan for ${devList.size()} device(s)"
-    log.info "Battery Monitor: scan started — ${devList.size()} device(s)"
+//    log.info "Battery Monitor: scan started — ${devList.size()} device(s)"
 
     confirmPendingReplacements()
 
@@ -438,7 +438,7 @@ def scanAllDevices() {
     def msg = "SCAN: ${devList.size()} device(s) scanned at ${ts}."
     if (poor.size()  > 0) msg += " Low battery: ${poor.join(', ')}."
     if (stale.size() > 0) msg += " Stale: ${stale.join(', ')}."
-    log.info "Battery Monitor: scan complete — ${devList.size()} device(s) processed"
+//    log.info "Battery Monitor: scan complete — ${devList.size()} device(s) processed"
 }
 
 def reportScheduler() {
@@ -488,8 +488,8 @@ def scheduledSummary() {
     if (!devList) return
 
     def categories = [
-        "🔴 Poor":      [list: [], enabled: notifyPoor      != null ? notifyPoor      : true],
-        "🟠 Fair":      [list: [], enabled: notifyFair      != null ? notifyFair      : true],
+        " Poor":      [list: [], enabled: notifyPoor      != null ? notifyPoor      : true],
+        " Fair":      [list: [], enabled: notifyFair      != null ? notifyFair      : true],
         "🟢 Good":      [list: [], enabled: notifyGood      != null ? notifyGood      : false],
         "🟢 Excellent": [list: [], enabled: notifyExcellent != null ? notifyExcellent : false]
     ]
@@ -497,7 +497,7 @@ def scheduledSummary() {
     devList.each { device ->
         if (isBatteryDead(device)) return
         def lvl = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
-        def cat = lvl >= 100 ? "🟢 Excellent" : lvl > 70 ? "🟢 Good" : lvl > 25 ? "🟠 Fair" : "🔴 Poor"
+        def cat = lvl >= 100 ? "🟢 Excellent" : lvl > 70 ? "🟢 Good" : lvl > 25 ? " Fair" : " Poor"
         categories[cat].list << [device: device, name: device.displayName.trim(), level: lvl]
     }
 
@@ -535,8 +535,8 @@ def scheduledSummary() {
         }
     }
 
-    def timestamp = new Date().format("MM/dd HH:mm", location.timeZone)
-    def body      = "${prefix}🔋 Battery Summary — ${timestamp}\n"
+    def timestamp = new Date().format("\nMM/dd HH:mm", location.timeZone)
+    def body      = ""
 
     def staleDevices = devList.findAll { isStale(it) }.collect {
         def last        = getLastActivityTime(it)
@@ -547,14 +547,14 @@ def scheduledSummary() {
     categories.each { cat, data ->
         if (data.enabled) {
             if (data.list) {
-                body += "\n${cat}:\n"
+                body += "\n<u>&nbsp${cat}&nbsp</u>\n"
                 data.list.each { dev ->
-                    if (cat == "🔴 Poor") {
+                    if (cat == "Poor") {
                         def info    = getCatalogBatteryInfo(dev.device)
                         def infoStr = info ? " (${info})" : ""
-                        body += "• ${dev.level}% ${dev.name}${infoStr}\n"
+                        body += " ${dev.level}% ${dev.name}${infoStr}\n"
                     } else {
-                        body += "• ${dev.level}% ${dev.name}\n"
+                        body += " ${dev.level}% ${dev.name}\n"
                     }
                 }
             } else {
@@ -565,23 +565,23 @@ def scheduledSummary() {
 
     if (notifyHighDrain != null ? notifyHighDrain : true) {
         if (highDrainList) {
-            body += "\n⚠️ High Drain (Fair/Poor):\n"
-            highDrainList.each { dev -> body += "• ${dev.health} (${dev.drain}%) ${dev.name} (${dev.level}%)\n" }
+            body += "\n<u>&nbspHigh Drain&nbsp</u>\n"
+            highDrainList.each { dev -> body += " ${dev.health} (${dev.drain}%) ${dev.name} (${dev.level}%)\n" }
         } else {
-            body += "\n⚠️ High Drain (Fair/Poor): None\n"
+            body += "\n<u>&nbspHigh Drain&nbsp</u>\nNone\n"
         }
     }
 
     if (notifyStale != null ? notifyStale : true) {
         if (staleDevices) {
-            body += "\n⚠️ Stale Devices:\n"
+            body += "\n<u>&nbspStale Devices&nbsp</u>\n"
             staleDevices.each { d ->
                 def info    = getCatalogBatteryInfo(d.device)
                 def infoStr = info ? " (${info})" : ""
-                body += "• ${d.name}${infoStr} — inactive ${d.inactiveStr}\n"
+                body += " ${d.name}${infoStr} — inactive ${d.inactiveStr}\n"
             }
         } else {
-            body += "\n⚠️ Stale Devices: None\n"
+            body += "\n<u>&nbspStale Devices&nbsp</u>\nNone\n"
         }
     }
 
@@ -593,7 +593,7 @@ def scheduledSummary() {
                 : devList.find { it.displayName.trim() == dev.name }
             def info    = getCatalogBatteryInfo(foundDev)
             def infoStr = info ? " (${info})" : ""
-            body += "• ${dev.name}${infoStr}\n"
+            body += " ${dev.name}${infoStr}\n"
         }
     }
 
@@ -622,7 +622,7 @@ def scheduledSummary() {
     if (settings?.pushoverDevices) settings.pushoverDevices.each { it.deviceNotification(pushoverBody) }
     if (settings?.notifyDevices)   notifyDevices.each { it.deviceNotification(plainBody) }
 
-    def poorCount  = categories["🔴 Poor"]?.list?.size() ?: 0
+    def poorCount  = categories[" Poor"]?.list?.size() ?: 0
     def staleCount = staleDevices?.size() ?: 0
     def deadCount  = deadBatteryList?.size() ?: 0
 }
@@ -1119,7 +1119,7 @@ def formatInactive(ts) {
 def getBatteryLevelDisplay(level, device = null) {
     if (device && isBatteryDead(device)) return "<span style='color:#ef4444;'>🪫 Dead</span>"
     level = (level instanceof Number ? level : null) != null ? level : 100
-    def cat = level >= 100 ? "🟢 Excellent" : level > 70 ? "🟢 Good" : level > 25 ? "🟠 Fair" : "🔴 Poor"
+    def cat = level >= 100 ? "🟢 Excellent" : level > 70 ? "🟢 Good" : level > 25 ? " Fair" : " Poor"
     def label = "${cat} (${level}%)"
     def data         = (device && state.history?.containsKey(device.id)) ? safeHistory(device) : null
     def showTag      = data?.justReplaced == true
@@ -1464,7 +1464,7 @@ def summaryPage() {
                 table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${level}'>${color}</td>"
 
                 def trend      = state.trend[device.id] ?: "Stable"
-                def trendIcon  = trend == "Heavy Drain" ? "🔴" : trend == "Moderate" ? "🟠" : "🟢"
+                def trendIcon  = trend == "Heavy Drain" ? "" : trend == "Moderate" ? "" : "🟢"
                 def trendOrder = dead ? 999 : (health(device) == "Pending" ? 99 : (["Heavy Drain": 3, "Moderate": 2, "Stable": 1][trend] ?: 1))
 
                 if (dead) {
@@ -1567,7 +1567,7 @@ def deviceManagePage(Map params = [:]) {
             if (ignoredNames) {
                 paragraph "<div style='background-color:#fff3cd; border-left:3px solid #ffc107; border-radius:0 4px 4px 0; padding:8px 12px;'>" +
                           "<span style='color:#856404;'><b>🚫 Ignored Devices (${ignoredNames.size()})</b> — excluded from all reports, notifications, and the portal.<br>" +
-                          ignoredNames.collect { "• ${it}" }.join("<br>") + "<br><br>" +
+                          ignoredNames.collect { " ${it}" }.join("<br>") + "<br><br>" +
                           "To restore a device, go to <b>Device Actions</b> and toggle its ignore setting. To restore multiple, use <b>Bulk Actions → Unignore</b>.</span></div>"
             }
             href(name: "toDetectionSettings", page: "detectionSettingsPage",
@@ -1829,7 +1829,7 @@ def ignoredDevicesPage() {
             section("<b>✅ Devices Restored</b>") {
                 paragraph "<div style='background-color:#d4edda; border-left:3px solid #28a745; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
                           "<span style='color:#155724;'><b>${restoredNames.size()} device(s) restored</b> — drain history reset, health set to ⏳ Pending, Restored entry logged in Battery Replacement History.</span><br><br>" +
-                          "<span style='color:#155724;'>" + restoredNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+                          "<span style='color:#155724;'>" + restoredNames.collect { " ${it}" }.join("<br>") + "</span></div>"
             }
         }
 
@@ -2019,7 +2019,7 @@ def bulkActionsResultPage() {
             section("<b>✅ Battery Replacements Logged</b>") {
                 paragraph "<div style='background-color:#d4edda; border-left:3px solid #28a745; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
                           "<span style='color:#155724;'><b>${replacedNames.size()} device(s) updated</b> — replacement logged, drain history reset, health set to ⏳ Pending.</span><br><br>" +
-                          "<span style='color:#155724;'>" + replacedNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+                          "<span style='color:#155724;'>" + replacedNames.collect { " ${it}" }.join("<br>") + "</span></div>"
             }
         }
 
@@ -2027,7 +2027,7 @@ def bulkActionsResultPage() {
             section("<b>🔄 Drain History Reset</b>") {
                 paragraph "<div style='background-color:#d4edda; border-left:3px solid #28a745; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
                           "<span style='color:#155724;'><b>${resetNames.size()} device(s) reset</b> — drain history cleared, health set to ⏳ Pending. No replacement logged.</span><br><br>" +
-                          "<span style='color:#155724;'>" + resetNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+                          "<span style='color:#155724;'>" + resetNames.collect { " ${it}" }.join("<br>") + "</span></div>"
             }
         }
 
@@ -2035,7 +2035,7 @@ def bulkActionsResultPage() {
             section("<b>🚫 Devices Ignored</b>") {
                 paragraph "<div style='background-color:#fff3cd; border-left:3px solid #ffc107; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
                           "<span style='color:#856404;'><b>${ignoredNames.size()} device(s) ignored</b> — excluded from all reports, notifications, and the portal.</span><br><br>" +
-                          "<span style='color:#856404;'>" + ignoredNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+                          "<span style='color:#856404;'>" + ignoredNames.collect { " ${it}" }.join("<br>") + "</span></div>"
             }
         }
 
@@ -2043,7 +2043,7 @@ def bulkActionsResultPage() {
             section("<b>✅ Devices Restored</b>") {
                 paragraph "<div style='background-color:#d4edda; border-left:3px solid #28a745; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
                           "<span style='color:#155724;'><b>${unignoredNames.size()} device(s) restored</b> — drain history reset, health set to ⏳ Pending, Restored entry logged.</span><br><br>" +
-                          "<span style='color:#155724;'>" + unignoredNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+                          "<span style='color:#155724;'>" + unignoredNames.collect { " ${it}" }.join("<br>") + "</span></div>"
             }
         }
 
@@ -2051,7 +2051,7 @@ def bulkActionsResultPage() {
             section("<b>⚠️ Skipped</b>") {
                 paragraph "<div style='background-color:#fff3cd; border-left:3px solid #ffc107; border-radius:0 4px 4px 0; padding:10px 14px;'>" +
                           "<span style='color:#856404;'>The following devices encountered an error and were skipped:<br><br>" +
-                          skippedNames.collect { "• ${it}" }.join("<br>") + "</span></div>"
+                          skippedNames.collect { " ${it}" }.join("<br>") + "</span></div>"
             }
         }
 
@@ -2460,7 +2460,7 @@ def sendNotificationPage() {
                 if (settings?.pushoverDevices) sentTo.addAll(settings.pushoverDevices.collect { "${it.displayName} (Pushover)" })
 
                 if (sentTo) {
-                    paragraph "✅ Notification sent to:\n" + sentTo.collect { "• ${it}" }.join("\n")
+                    paragraph "✅ Notification sent to:\n" + sentTo.collect { " ${it}" }.join("\n")
                 } else {
                     paragraph "✅ Notification sent via hub push."
                 }
@@ -2505,13 +2505,13 @@ def infoPage(Map params = [:]) {
         section("<b>🔑 Battery Level Ranges</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>Battery level colors reflect current charge percentage. " +
                       "Health ratings use the same color scheme but are based on drain rate — not battery percentage. " +
-                      "A device can show 🟢 Good battery level yet 🔴 Poor health if it is draining unusually fast.<br><br>" +
+                      "A device can show 🟢 Good battery level yet  Poor health if it is draining unusually fast.<br><br>" +
                       "<div style='overflow-x:auto; -webkit-overflow-scrolling:touch;'><table style='width:100%; border-collapse: collapse;'>" +
                       "<tr style='font-weight:bold;'><td>Level</td><td>Range</td><td>Meaning</td></tr>" +
                       "<tr><td>🟢 Excellent</td><td>100%</td><td>Fully charged</td></tr>" +
                       "<tr><td>🟢 Good</td><td>71–99%</td><td>Healthy — no action needed</td></tr>" +
-                      "<tr><td>🟠 Fair</td><td>26–70%</td><td>Getting low — keep an eye on it</td></tr>" +
-                      "<tr><td>🔴 Poor</td><td>0–25%</td><td>Replace soon</td></tr>" +
+                      "<tr><td> Fair</td><td>26–70%</td><td>Getting low — keep an eye on it</td></tr>" +
+                      "<tr><td> Poor</td><td>0–25%</td><td>Replace soon</td></tr>" +
                       "<tr><td>🪫 Dead</td><td>0% (confirmed)</td><td>Battery confirmed dead — replace immediately</td></tr>" +
                       "</table></div></div>"
         }
@@ -2521,15 +2521,15 @@ def infoPage(Map params = [:]) {
                       "<b>Health</b> is a long-term confidence-weighted average drain rate — slow to change by design. It answers: <i>how efficiently has this battery been used overall?</i><br><br>" +
                       "<b>Trend</b> reacts faster to recent readings. It answers: <i>what is this battery doing right now?</i><br><br>" +
                       "In the <b>Health &amp; Trend</b> column:<br>" +
-                      "• When Health and Trend agree, only Health is shown — no noise<br>" +
-                      "• When Trend is <i>worse</i> than Health, a <span style='color:#f97316;font-weight:bold;'>⚠ warning</span> appears alongside Health — this is the most actionable signal, meaning something has recently changed<br><br>" +
+                      " When Health and Trend agree, only Health is shown — no noise<br>" +
+                      " When Trend is <i>worse</i> than Health, a <span style='color:#f97316;font-weight:bold;'>⚠ warning</span> appears alongside Health — this is the most actionable signal, meaning something has recently changed<br><br>" +
                       "<div style='overflow-x:auto; -webkit-overflow-scrolling:touch;'><table style='width:100%; border-collapse: collapse;'>" +
                       "<tr style='font-weight:bold;'><td>Health</td><td>Drain/day</td><td>What It Means</td></tr>" +
                       "<tr><td>⏳ Pending</td><td>—</td><td>Not enough data yet — still learning</td></tr>" +
                       "<tr><td>🟢 Excellent</td><td>&lt;= 0.3%</td><td>Very efficient, minimal drain</td></tr>" +
                       "<tr><td>🟢 Good</td><td>0.3–0.8%</td><td>Normal battery usage</td></tr>" +
-                      "<tr><td>🟠 Fair</td><td>0.8–1.5%</td><td>Above average — worth monitoring</td></tr>" +
-                      "<tr><td>🔴 Poor</td><td>&gt; 1.5%</td><td>High drain — notification fires</td></tr>" +
+                      "<tr><td> Fair</td><td>0.8–1.5%</td><td>Above average — worth monitoring</td></tr>" +
+                      "<tr><td> Poor</td><td>&gt; 1.5%</td><td>High drain — notification fires</td></tr>" +
                       "</table></div><br>" +
                       "When trend is active it shows as <b>Moderate Drain</b> or <b>Heavy Drain</b> next to the health rating. " +
                       "Moderate Drain means drain is elevated but not yet at the notification threshold. Heavy Drain means drain is high enough to trigger the High Drain notification.<br><br>" +
@@ -2572,10 +2572,10 @@ def infoPage(Map params = [:]) {
                       "<b>How it works:</b> Batteries only drain naturally — they never recharge on their own. So any significant upward jump in battery level means a new battery was installed. " +
                       "Battery Monitor watches for these jumps and logs a replacement automatically.<br><br>" +
                       "<b>Detection rules:</b><br>" +
-                      "• Battery level jumps up by at least the configured minimum (default 30%)<br>" +
-                      "• Jump is confirmed across two consecutive readings within 48 hours<br>" +
-                      "• Device has 3+ prior drain samples and is 3+ days old<br>" +
-                      "• 12-hour cooldown prevents duplicate detections<br><br>" +
+                      " Battery level jumps up by at least the configured minimum (default 30%)<br>" +
+                      " Jump is confirmed across two consecutive readings within 48 hours<br>" +
+                      " Device has 3+ prior drain samples and is 3+ days old<br>" +
+                      " 12-hour cooldown prevents duplicate detections<br><br>" +
                       "A single spurious spike will not log a replacement — the two-reading confirmation catches noisy devices. " +
                       "The minimum jump % is configurable under <b>🔋 Device Battery Management → Auto-Detection Settings</b>.<br><br>" +
                       "<b>Manual logging</b> is still available in Device Actions for edge cases: integrated batteries, " +
@@ -2585,13 +2585,13 @@ def infoPage(Map params = [:]) {
 
         section("<b>💡 Tips for Best Results</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "• Let new batteries run at least a week before trusting health ratings<br>" +
-                      "• Assign battery types in 🔋 Device Battery Management — used in notifications and the portal<br>" +
-                      "• After replacing a battery, log it in 🔋 Device Battery Management or use Bulk Actions for multiple devices<br>" +
-                      "• Auto-detection logs replacements for any upward battery jump ≥ your configured minimum % (default 30%) confirmed across two readings<br>• If a replacement isn't auto-detected, log it manually in Device Actions — useful for integrated batteries or unreliable reporters<br>" +
-                      "• Use Ignored Devices for spare or storage devices you don't want to monitor<br>" +
-                      "• Use Reset Drain History if a device shows incorrect Heavy Drain after first install<br>" +
-                      "• Use Notification Snooze when traveling</div>"
+                      " Let new batteries run at least a week before trusting health ratings<br>" +
+                      " Assign battery types in 🔋 Device Battery Management — used in notifications and the portal<br>" +
+                      " After replacing a battery, log it in 🔋 Device Battery Management or use Bulk Actions for multiple devices<br>" +
+                      " Auto-detection logs replacements for any upward battery jump ≥ your configured minimum % (default 30%) confirmed across two readings<br> If a replacement isn't auto-detected, log it manually in Device Actions — useful for integrated batteries or unreliable reporters<br>" +
+                      " Use Ignored Devices for spare or storage devices you don't want to monitor<br>" +
+                      " Use Reset Drain History if a device shows incorrect Heavy Drain after first install<br>" +
+                      " Use Notification Snooze when traveling</div>"
         }
     }
 }
