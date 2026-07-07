@@ -11,7 +11,7 @@ definition(
     author: "jdthomas24",
     description: "Monitor device check-in health across Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable — learns each device's normal pattern and alerts you when something goes quiet. Includes OAuth web portal, SPA dashboard, batch scanning, location grouping, and richer notifications.",
     category: "Convenience",
-    importUrl: "https://github.com/theCAZ/Hubitat-Apps-Drivers/blob/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
+    importUrl: "https://raw.githubusercontent.com/theCAZ/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
     version: "1.5.10",
