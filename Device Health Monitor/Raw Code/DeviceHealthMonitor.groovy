@@ -3523,7 +3523,7 @@ def scheduledSummary() {
     sections.each { health, data ->
         if (data.enabled) {
             body += "\n${data.emoji} ${health}\n"
-            if (data.list) { data.list.each { name -> body += "• ${name}\n" } }
+            if (data.list) { data.list.each { name -> body += "${name}\n" } }
             else { body += "None\n" }
         }
     }
