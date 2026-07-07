@@ -3494,7 +3494,7 @@ def scheduledSummary() {
     def body = ""
 
     def sections = [
-        "<u>&nbspOffline&nbsp</u>":   [emoji: "", enabled:         settings?.notifyOffline   != false, list: []],
+                "<u>&nbspOffline&nbsp</u>":   [emoji: "", enabled:         settings?.notifyOffline   != false, list: []],
                 "<u>&nbspPoor&nbsp</u>":      [emoji: "", enabled: settings?.notifyPoor      != false, list: []],
                 "<u>&nbspFair&nbsp</u>":      [emoji: "", enabled: settings?.notifyFair      != false, list: []],
                 "<u>&nbspGood&nbsp</u>":      [emoji: "🟢", enabled: settings?.notifyGood      ?: false, list: []],
