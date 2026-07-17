@@ -6,7 +6,7 @@
   "description": "Monitor device check-in health across Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable — learns each device's normal pattern and alerts you when something goes quiet.",
   "dateReleased": "4/28/26",
   "minimumHEVersion": "2.3.0",
-  "releaseNotes": "v1.5.11 — Bug fix: "Scan failed for X: No signature of method... BigDecimal.round()" errors in debug logs, silently skipping state tracking for affected devices.",
+  "releaseNotes": "v1.5.11 — Bug fix: Scan failed for X: No signature of method... BigDecimal.round()" errors in debug logs, silently skipping state tracking for affected devices.",
   "apps": [
     {
       "id": "a045ac2b-5fe0-4159-830b-8550899d9553",
