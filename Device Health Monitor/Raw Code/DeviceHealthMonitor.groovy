@@ -2044,7 +2044,7 @@ def updateHealth(device) {
                 capData.pingFailed = 0
                 capMap[id as String] = capData
                 state.deviceCapabilities = capMap
-                if (debugEnabled()) log.debug "${device.displayName}: pingWorks trust expired (${(pingAge/3600000).round(1)}h old) — clearing for fresh verification"
+                if (debugEnabled()) log.debug "${device.displayName}: pingWorks trust expired (${(pingAge/3600000).setScale(1, BigDecimal.ROUND_HALF_UP)}h old) — clearing for fresh verification"
                 // currentHealth stays Poor/Offline — fairHold was already evaluated above
             }
         }
