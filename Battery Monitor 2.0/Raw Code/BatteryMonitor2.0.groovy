@@ -549,13 +549,7 @@ def scheduledSummary() {
             if (data.list) {
                 body += "\n<u>&nbsp${cat}&nbsp</u>\n"
                 data.list.each { dev ->
-                    if (cat == "Poor") {
-                        def info    = getCatalogBatteryInfo(dev.device)
-                        def infoStr = info ? " (${info})" : ""
-                        body += " ${dev.level}% ${dev.name}${infoStr}\n"
-                    } else {
-                        body += " ${dev.level}% ${dev.name}\n"
-                    }
+                    body += " ${dev.level}% ${dev.name}\n"
                 }
             } else {
                 body += "\n${cat}: None\n"
@@ -576,9 +570,7 @@ def scheduledSummary() {
         if (staleDevices) {
             body += "\n<u>&nbspStale Devices&nbsp</u>\n"
             staleDevices.each { d ->
-                def info    = getCatalogBatteryInfo(d.device)
-                def infoStr = info ? " (${info})" : ""
-                body += " ${d.name}${infoStr} — inactive ${d.inactiveStr}\n"
+                body += " ${d.name} - Inactive ${d.inactiveStr}\n"
             }
         } else {
             body += "\n<u>&nbspStale Devices&nbsp</u>\nNone\n"
@@ -588,12 +580,7 @@ def scheduledSummary() {
     if (deadBatteryList) {
         body += "\n🪫 Dead Batteries:\n"
         deadBatteryList.each { dev ->
-            def foundDev = dev.deviceId
-                ? devList.find { it.id == dev.deviceId }
-                : devList.find { it.displayName.trim() == dev.name }
-            def info    = getCatalogBatteryInfo(foundDev)
-            def infoStr = info ? " (${info})" : ""
-            body += " ${dev.name}${infoStr}\n"
+            body += " ${dev.name}\n"
         }
     }
 
@@ -1276,7 +1263,7 @@ tr:hover td{background:#1a1a1a}
 
         html.append("<div class='section-title'>All Devices</div>")
         html.append("<table><thead><tr>")
-        html.append("<th>Device</th><th>Battery</th><th>Drain</th><th>Est Days</th><th>Health & Trend</th><th>Last Activity</th><th>Type</th>")
+        html.append("<th>Device</th><th>Battery</th><th>Drain</th><th>Est Days</th><th>Health & Trend</th><th>Last Activity</th>")
         html.append("</tr></thead><tbody>")
 
         devList.each { device ->
@@ -1286,7 +1273,6 @@ tr:hover td{background:#1a1a1a}
             def drain     = getDrain(device)
             def est       = estDays(device)
             def stale     = isStale(device)
-            def catalog   = getCatalogBatteryInfo(device) ?: "—"
             def lastActMs = getLastActivityTime(device)
             def lastAct   = lastActMs ? formatTimeAgo(lastActMs) : "N/A"
             def trend     = state.trend[device.id] ?: "Stable"
@@ -1325,7 +1311,6 @@ tr:hover td{background:#1a1a1a}
             html.append("<td>${estStr}</td>")
             html.append("<td>${healthCell}</td>")
             html.append("<td>${lastAct}</td>")
-            html.append("<td>${catalog}</td>")
             html.append("</tr>")
         }
 
@@ -1394,7 +1379,6 @@ def summaryPage() {
             table += "<th style='padding:4px; border:1px solid #ccc;'>Health &amp; Trend</th>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Last Battery</th>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Last Activity</th>"
-            table += "<th style='padding:4px; border:1px solid #ccc;'>Battery Type</th>"
             table += "</tr></thead><tbody>"
             def summaryRowNum = 0
 
@@ -1402,9 +1386,6 @@ def summaryPage() {
                 def dead = isBatteryDead(device)
                 def level = null
                 try { level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100 } catch (e) { level = 100 }
-
-                def catalogInfo = ""
-                try { catalogInfo = getCatalogBatteryInfo(device) ?: "" } catch (e) { }
 
                 def drain = 0.3
                 try { drain = getDrain(device) } catch (e) { }
@@ -1499,7 +1480,6 @@ def summaryPage() {
 
                 table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${lastBatteryMs}'>${lastBatteryStr}</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${lastActivityMs}'>${lastActivityStr}${staleTag}</td>"
-                table += "<td style='padding:4px; border:1px solid #ccc;'>${catalogInfo}</td>"
                 table += "</tr>"
             }
 
@@ -1515,7 +1495,7 @@ def summaryPage() {
         searching:  true,
         order:      [[1, 'asc']],
         columnDefs: [
-            { type: 'num', targets: [1, 2, 3, 6, 7] }
+            { type: 'num', targets: [1, 2, 3, 6] }
         ]
     });
 });
@@ -2104,17 +2084,15 @@ def deviceActionsPage() {
         def level       = null
         try { level = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : "?" } catch (e) { level = "?" }
         def h           = health(device)
-        def catalogInfo = getCatalogBatteryInfo(device) ?: "Not set"
         def dead        = isBatteryDead(device)
         def healthStr   = dead ? "🪫 Dead" : getHealthDisplay(device)
 
-        // Device info card — trimmed: Battery, Health, Type only
+        // Device info card — trimmed: Battery, Health only
         section("") {
             paragraph "<div style='background:#dbeafe; border-left:4px solid #1a73e8; border-radius:4px; padding:10px 12px;'>" +
                       "<b style='font-size:15px;'>${device.displayName}</b><br>" +
                       "<span style='color:#374151;'>Battery: <b>${level}%</b> &nbsp;·&nbsp; " +
-                      "Health: <b>${healthStr}</b> &nbsp;·&nbsp; " +
-                      "Type: <b>${catalogInfo}</b></span></div>"
+                      "Health: <b>${healthStr}</b></span></div>"
         }
 
         // Actions — side by side
@@ -2279,7 +2257,6 @@ def historyPage() {
             def table = "<table style='width:100%; border-collapse: collapse; border: 1px solid #ccc;'>"
             table += "<tr style='font-weight:bold; background-color:#f0f0f0;'>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Device</td>"
-            table += "<td style='padding:4px; border:1px solid #ccc;'>Battery Type</td>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Level</td>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Date</td>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Type</td>"
@@ -2301,8 +2278,6 @@ def historyPage() {
                     ? autoDevices?.find { it.id == r.deviceId }
                     : autoDevices?.find { it.displayName == r.device }
                 def orphaned    = (dev == null)
-                def info        = dev ? getCatalogBatteryInfo(dev) : null
-                def infoStr     = info ? "${info}" : ""
                 def displayName = dev ? dev.displayName : r.device
 
                 // Clickable device link
@@ -2321,7 +2296,6 @@ def historyPage() {
 
                 table += "<tr style='background-color:${historyRowBg};${orphaned ? "opacity:0.6;" : ""}'>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>${nameDisplay}</td>"
-                table += "<td style='padding:4px; border:1px solid #ccc;'>${infoStr}</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>${r.level}%</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>${dateDisplay}</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>${typeTag}</td>"
@@ -2498,7 +2472,7 @@ def infoPage(Map params = [:]) {
         section("<b>🌐 Web Portal</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
                       "Enable OAuth in App Code to unlock the web portal — Cloud and Local URLs appear on the main page once active. " +
-                      "The portal shows all devices sorted by battery level with health, drain, est days, last activity, and battery type. Auto-refreshes every 2 minutes.<br><br>" +
+                      "The portal shows all devices sorted by battery level with health, drain, est days, and last activity. Auto-refreshes every 2 minutes.<br><br>" +
                       "Add a Link tile to your Hubitat dashboard and paste in your Cloud or Local URL to access it directly.</div>"
         }
 
