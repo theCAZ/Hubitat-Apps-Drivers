@@ -3430,7 +3430,7 @@ def scheduledSummary() {
             def h = state.health?.get(device.id) ?: "Pending"
             if (sections.containsKey(h)) {
                 def lastStr   = state.history?.get(device.id)?.lastSeen
-                    ? ", last seen ${formatTimeAgo(state.history[device.id].lastSeen)}" : ""
+                    ? " - Last Seen ${formatTimeAgo(state.history[device.id].lastSeen)}" : ""
                 sections[h].list << "${device.displayName.trim()}${lastStr}"
             }
         }
