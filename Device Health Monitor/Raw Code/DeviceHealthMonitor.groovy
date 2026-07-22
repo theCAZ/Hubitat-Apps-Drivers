@@ -536,7 +536,10 @@ def getStateVerified(deviceId) {
 
 // ============================================================
 // ===================== STATE TRACKING ======================
+// (Retained internally — feeds getStateVerified()/updateHealth()
+//  for health scoring. Not shown anywhere in device-facing output.)
 // ============================================================
+
 def getMeaningfulAttributes(device) {
     def known = [
         "switch", "contact", "motion", "lock", "presence", "water",
@@ -1258,7 +1261,7 @@ def mainPage() {
         section("<b>Reports:</b>") {
             href(name: "toActivitySummary", page: "activitySummaryPage",
                  title: "<b>Device Activity Summary</b>",
-                 description: "All devices, health status, current state")
+                 description: "All devices and health status")
             href(name: "toProblemDevices", page: "problemDevicesPage",
                  title: "<b>⚠️ Problem Devices & Verification</b>",
                  description: "Active issues, unverifiable devices, and verification status")
@@ -1284,7 +1287,7 @@ def mainPage() {
         section("<b>Help & Support</b>") {
             href(name: "toInfoPage", page: "infoPage",
                  title: "📖 App Guide & Reference",
-                 description: "Health scoring, state tracking, portal setup, and troubleshooting explained")
+                 description: "Health scoring, portal setup, and troubleshooting explained")
             paragraph rawHtml: true, """
 <div style='padding:4px 0;'>
   <a href='https://community.hubitat.com/t/release-device-health-monitor/163229' target='_blank'
@@ -2381,48 +2384,6 @@ def formatInterval(minutes) {
     return "${(m / 1440).toInteger()}d ${((m % 1440) / 60).toInteger()}h"
 }
 
-def formatStateDisplay(stateInfo) {
-    if (!stateInfo) return "—"
-    def label = stateInfo.label
-    def color = stateInfo.color
-    switch (color) {
-        case "#c62828": return "<span style='background:#fee2e2; color:#b91c1c; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
-        case "#e65100": return "<span style='background:#fff3e0; color:#c2410c; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
-        case "#1565c0": return "<span style='background:#dbeafe; color:#1d4ed8; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
-        case "#8b5cf6": return "<span style='background:#f3e8ff; color:#7c3aed; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
-        case "#16a34a": return "<span style='background:#dcfce7; color:#15803d; padding:3px 10px; border-radius:10px; font-weight:700; font-size:13px; display:inline-block;'>${label}</span>"
-        default:        return "<span style='color:#4b5563;font-weight:600;font-size:13px;'>${label}</span>"
-    }
-}
-
-def formatStateDisplayInput(stateInfo) {
-    if (!stateInfo) return "—"
-    def label = stateInfo.label
-    def color = stateInfo.color
-    switch (color) {
-        case "#c62828": return "<b><span style='color:#b91c1c;font-size:13px;'>${label}</span></b>"
-        case "#e65100": return "<b><span style='color:#c2410c;font-size:13px;'>${label}</span></b>"
-        case "#1565c0": return "<b><span style='color:#1d4ed8;font-size:13px;'>${label}</span></b>"
-        case "#8b5cf6": return "<b><span style='color:#7c3aed;font-size:13px;'>${label}</span></b>"
-        case "#16a34a": return "<b><span style='color:#15803d;font-size:13px;'>${label}</span></b>"
-        default:        return "<b><span style='color:#1f2937;font-size:13px;'>${label}</span></b>"
-    }
-}
-
-def formatStateDisplayOverride(stateInfo) {
-    if (!stateInfo) return "—"
-    def label = stateInfo.label
-    def color = stateInfo.color
-    switch (color) {
-        case "#c62828": return "<b><span style='color:#b91c1c;'>[${label}]</span></b>"
-        case "#e65100": return "<b><span style='color:#c2410c;'>[${label}]</span></b>"
-        case "#1565c0": return "<b><span style='color:#1d4ed8;'>[${label}]</span></b>"
-        case "#8b5cf6": return "<b><span style='color:#7c3aed;'>[${label}]</span></b>"
-        case "#16a34a": return "<b><span style='color:#15803d;'>[${label}]</span></b>"
-        default:        return "<b><span style='color:#374151;'>[${label}]</span></b>"
-    }
-}
-
 // ============================================================
 // ===================== OAUTH PORTAL HELPERS ================
 // ============================================================
@@ -2480,12 +2441,6 @@ def serveDataEndpoint() {
             def lastSeenStr  = lastSeenMs ? formatTimeAgo(lastSeenMs) : "Never"
             def avgIntStr    = data?.userInterval ? formatInterval(data.userInterval) + " (manual)" :
                                data?.avgInterval  ? formatInterval(data.avgInterval) : "Learning..."
-            def stateInfo    = getCurrentStateDisplay(device)
-            def stateLabel   = stateInfo?.label ?: "—"
-            def stateColor   = stateInfo?.color ?: "#c0c4cc"
-            def isAlert      = stateInfo?.isAlert ?: false
-            def tracked      = state.stateHistory?.get(device.id as String)
-            def lastChanged  = tracked?.lastChanged ? formatTimeAgo(tracked.lastChanged as Long) : "—"
             def loc          = getDeviceLocation(device.id)
             def desc         = settings["desc_${device.id}"] ?: ""
             def verifyMethod = state.verifying?.get(device.id)
@@ -2493,6 +2448,9 @@ def serveDataEndpoint() {
                                settings["protocolOverride_${device.id}"] != "Auto-detect"
             def trustSource  = state.deviceCapabilities?.get(device.id as String)?.pingTrustSource ?: ""
 
+            // NOTE: Current device state (on/off, open/closed, etc.) is intentionally
+            // not included in this payload — device state is no longer part of this
+            // app's output. Only health/connectivity information is exposed.
             [
                 id:              device.id,
                 name:            device.displayName,
@@ -2505,10 +2463,6 @@ def serveDataEndpoint() {
                 lastSeen:        lastSeenStr,
                 lastSeenMs:      lastSeenMs,
                 avgInterval:     avgIntStr,
-                stateLabel:      stateLabel,
-                stateColor:      stateColor,
-                stateAlert:      isAlert,
-                lastChanged:     lastChanged,
                 location:        loc,
                 description:     desc,
                 pingStatus:      getPingStatus(device.id),
@@ -2578,7 +2532,6 @@ summary:hover{background:#252525}
 .row{display:flex;align-items:flex-start;gap:10px}
 .dev-name{font-size:14px;font-weight:bold;color:#fff}
 .dev-meta{font-size:11px;color:#888;margin-top:3px}
-.dev-state{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-top:4px}
 .proto-tag{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:middle}
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;padding:20px;box-sizing:border-box}
 .modal{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:22px;width:100%;max-width:500px;max-height:90vh;overflow-y:auto;position:relative}
@@ -2661,16 +2614,6 @@ function healthLabel(dev) {
     return icon + ' ' + h + suffix;
 }
 
-function stateTag(dev) {
-    if (dev.stateLabel === '—') return '';
-    let bg = dev.stateColor === '#c62828' ? '#fee2e2;color:#b91c1c' :
-             dev.stateColor === '#e65100' ? '#fff3e0;color:#c2410c' :
-             dev.stateColor === '#1565c0' ? '#dbeafe;color:#1d4ed8' :
-             dev.stateColor === '#8b5cf6' ? '#f3e8ff;color:#7c3aed' :
-             dev.stateColor === '#16a34a' ? '#dcfce7;color:#15803d' : 'transparent;color:#4b5563';
-    return "<span class='dev-state' style='background:#" + bg + ";'>" + dev.stateLabel + "</span>";
-}
-
 function protoTag(dev) {
     return "<span class='proto-tag' style='background:" + dev.protocolColor + "22;color:" + dev.protocolColor + ";'>" +
            dev.protocol + (dev.hasOverride ? ' <span style=\\"color:#94a3b8\\">(override)</span>' : '') + "</span>";
@@ -2697,12 +2640,10 @@ function card(dev) {
            "<div class='dev-name'>" + dev.name + protoTag(dev) + "</div>" +
            locHtml +
            "<div class='dev-health'>" + healthLabel(dev) + "</div>" +
-           stateTag(dev) +
            (pingTag ? "<div style='margin-top:3px;'>" + pingTag + "</div>" : "") +
            "</div><div style='text-align:right;flex-shrink:0;font-size:11px;color:#666;min-width:80px;'>" +
            "<div>Last: " + dev.lastSeen + "</div>" +
            "<div>Avg: " + dev.avgInterval + "</div>" +
-           (dev.lastChanged !== '—' ? "<div>Changed: " + dev.lastChanged + "</div>" : '') +
            "</div></div></div>";
 }
 
@@ -2887,13 +2828,13 @@ def activitySummaryPage() {
 
             def hubIp = location?.hub?.localIP ?: ""
 
+            // NOTE: Device state (on/off, open/closed, etc.) columns removed from
+            // this table — this report now shows connectivity/health only.
             def table = "<table id='activityTable' style='width:100%; border-collapse: collapse; border: 1px solid #ccc;'>"
             table += "<thead><tr style='font-weight:bold; background-color:#f0f0f0;'>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Device</th>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Protocol</th>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Health</th>"
-            table += "<th style='padding:4px; border:1px solid #ccc;'>State</th>"
-            table += "<th style='padding:4px; border:1px solid #ccc;'>State Changed</th>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Last Check-in</th>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Avg Check-in</th>"
             table += "<th style='padding:4px; border:1px solid #ccc;'>Verification</th>"
@@ -2917,12 +2858,6 @@ def activitySummaryPage() {
 
                 def h            = state.health?.get(device.id) ?: "Pending"
                 def healthOrder  = snoozed ? 99 : (h == "<u>&nbspOffline&nbsp</u>" ? 1 : h == "<u>&nbspPoor&nbsp</u>" ? 2 : h == "<u>&nbspFair&nbsp</u>" ? 3 : h == "Good" ? 4 : h == "Excellent" ? 5 : 6)
-                def stateInfo    = getCurrentStateDisplay(device)
-                def stateDisplay = stateInfo ? formatStateDisplay(stateInfo) : "—"
-                def stateOrderVal = stateInfo ? stateInfo.label.toLowerCase() : "zzz"
-                def tracked       = state.stateHistory?.get(device.id as String)
-                def lastChangedMs = tracked?.lastChanged ? (tracked.lastChanged as Long) : 0
-                def lastChangedStr = lastChangedMs ? formatTimeAgo(lastChangedMs) : "—"
                 def loc = getDeviceLocation(device.id) ?: "—"
 
                 rowNum++
@@ -2932,8 +2867,6 @@ def activitySummaryPage() {
                 table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${device.displayName.toLowerCase().trim()}'>${deviceLink}</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'><span style='color:${getProtocolColor(protocol)};font-weight:bold;'>${protocolDisplay}</span></td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${healthOrder}'>${getHealthDisplay(device)}</td>"
-                table += "<td style='padding:4px; border:1px solid #ccc; text-align:center;' data-order='${stateOrderVal}'>${stateDisplay}</td>"
-                table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${-lastChangedMs}'>${lastChangedStr}</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${-lastSeenMs}'>${lastSeenStr}</td>"
                 def pingDisplay = getPingStatusDisplay(device.id)
                 table += "<td style='padding:4px; border:1px solid #ccc;' data-order='${avgRawMin}'>${avgIntStr}</td>"
@@ -2951,7 +2884,7 @@ ${hubIp ? "<div style='background-color:#fff8e1; border-left:3px solid #e65100; 
     \$('#activityTable').DataTable({
         paging: false, info: false, searching: true,
         order: [[2, 'asc']],
-        columnDefs: [{ type: 'num', targets: [2, 4, 5, 6] }, { type: 'string', targets: [3] }]
+        columnDefs: [{ type: 'num', targets: [2, 3, 4] }]
     });
 });
 </script>
@@ -2995,13 +2928,13 @@ def hubMeshSummaryPage() {
             }
             paragraph rawHtml: true, bannerHtml
 
+            // NOTE: Device state column removed — table now shows connectivity/health only.
             def table = "<table style='width:100%; border-collapse: collapse; border: 1px solid #ccc;'>"
             table += "<tr style='font-weight:bold; background-color:#f0f0f0;'>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Device</td>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Source Hub</td>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Protocol</td>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Health</td>"
-            table += "<td style='padding:4px; border:1px solid #ccc;'>State</td>"
             table += "<td style='padding:4px; border:1px solid #ccc;'>Last Check-in</td>"
             table += "</tr>"
 
@@ -3022,8 +2955,6 @@ def hubMeshSummaryPage() {
                 def srcHub       = getHubMeshSourceHub(device)
                 def lastSeen     = data?.lastSeen ? formatTimeAgo(data.lastSeen) : "Never"
                 def rowBg        = (rowNum % 2 == 0) ? "#ffffff" : "#ebebeb"
-                def stateInfo    = getCurrentStateDisplay(device)
-                def stateDisplay = stateInfo ? formatStateDisplay(stateInfo) : "—"
                 def deviceLink   = hubIp ? "<a href='http://${hubIp}/device/edit/${device.id}' target='_blank'>${device.displayName}</a>" : device.displayName
                 rowNum++
                 table += "<tr style='background-color:${rowBg};'>"
@@ -3031,7 +2962,6 @@ def hubMeshSummaryPage() {
                 table += "<td style='padding:4px; border:1px solid #ccc;'>${srcHub}</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'><span style='color:${getProtocolColor(protocol)};font-weight:bold;'>${protocol}</span></td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>${getHealthDisplay(device)}</td>"
-                table += "<td style='padding:4px; border:1px solid #ccc; text-align:center;'>${stateDisplay}</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>${lastSeen}</td>"
                 table += "</tr>"
             }
@@ -3098,11 +3028,11 @@ def problemDevicesPage() {
             if (!problems) {
                 paragraph "✅ No problem devices — all monitored devices are healthy."
             } else {
+                // NOTE: Device state column removed — table now shows connectivity/health only.
                 def table = "<table style='width:100%; border-collapse:collapse; border:1px solid #ccc;'>"
                 table += "<tr style='font-weight:bold; background-color:#f0f0f0;'>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>Device</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>Health</td>"
-                table += "<td style='padding:4px; border:1px solid #ccc;'>State</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>Last Check-in</td>"
                 table += "<td style='padding:4px; border:1px solid #ccc;'>Verification</td>"
                 table += "</tr>"
@@ -3111,8 +3041,6 @@ def problemDevicesPage() {
                 problems.each { device ->
                     def data         = state.history?.get(device.id)
                     def lastSeen     = data?.lastSeen ? formatTimeAgo(data.lastSeen) : "Never"
-                    def stateInfo    = getCurrentStateDisplay(device)
-                    def stateDisplay = stateInfo ? formatStateDisplay(stateInfo) : "—"
                     def pingDisp     = getPingStatusDisplay(device.id)
                     def loc          = getDeviceLocation(device.id)
                     def locTag       = loc ? " <span style='color:#94a3b8;font-size:10px;'>🏷️ ${loc}</span>" : ""
@@ -3122,7 +3050,6 @@ def problemDevicesPage() {
                     table += "<tr style='background-color:${rowBg};'>"
                     table += "<td style='padding:4px; border:1px solid #ccc;'>${deviceLink}${locTag}</td>"
                     table += "<td style='padding:4px; border:1px solid #ccc;'>${getHealthDisplay(device)}</td>"
-                    table += "<td style='padding:4px; border:1px solid #ccc; text-align:center;'>${stateDisplay}</td>"
                     table += "<td style='padding:4px; border:1px solid #ccc;'>${lastSeen}</td>"
                     table += "<td style='padding:4px; border:1px solid #ccc;'>${pingDisp}</td>"
                     table += "</tr>"
@@ -3250,24 +3177,18 @@ def protocolOverridePage() {
         section("") {
             paragraph "<div style='background-color:#fdf4ff; border-left:4px solid #a855f7; padding:10px 12px; border-radius:3px; margin-top:8px;'>" +
                       "<span style='font-size:15px; font-weight:bold; color:#4a1772;'>📌 State Attribute Overrides</span><br>" +
-                      "<span style='color:#475569;font-size:12px;'>Pin a specific attribute per device when the app picks the wrong one to display in the Current State column.</span></div>"
+                      "<span style='color:#475569;font-size:12px;'>These pin which attribute is used internally for state-change verification (used to confirm a device is still communicating). This no longer affects any visible state display, since device state is not shown in this app's output.</span></div>"
         }
         if (!stateDevList || stateDevList.size() == 0) {
             section("") { paragraph "✅ No devices with overrideable state attributes found." }
         } else {
             section("<b>Devices with Overrideable State Attributes (${stateDevList.size()})</b>") {
                 stateDevList.each { device ->
-                    def currentOverride      = settings["stateAttrOverride_${device.id}"] ?: "Auto-detect"
-                    def autoResult           = getCurrentStateDisplay(device)
-                    def attrs                = getMeaningfulAttributes(device)
-                    def options              = ["Auto-detect"] + attrs
-                    def overrideStateResult  = currentOverride != "Auto-detect" ? getOverrideStateDisplay(device, currentOverride) : null
-                    def overrideValueDisplay = overrideStateResult ? formatStateDisplay(overrideStateResult) : "<span style='color:#1f2937;font-weight:600;font-size:13px;'>${currentOverride}</span>"
-                    def currentDisplay       = currentOverride == "Auto-detect"
-                        ? "<span style='color:#374151;font-size:13px;font-weight:500;'>Auto-detected: ${autoResult ? formatStateDisplay(autoResult) : "—"}</span>"
-                        : "<span style='color:#a855f7; font-weight:bold;'>⚙️ Override Active: ${overrideValueDisplay}</span>"
+                    def currentOverride = settings["stateAttrOverride_${device.id}"] ?: "Auto-detect"
+                    def attrs           = getMeaningfulAttributes(device)
+                    def options         = ["Auto-detect"] + attrs
                     input "stateAttrOverride_${device.id}", "enum",
-                          title: "<b>${device.displayName}</b> — ${currentDisplay}",
+                          title: "<b>${device.displayName}</b> — <span style='color:#374151;font-size:13px;'>${currentOverride}</span>",
                           options: options, defaultValue: currentOverride, required: false, width: 6
                 }
             }
@@ -3365,7 +3286,7 @@ def forceScanPage() {
             def intervalMinutes = (intervalStr.toFloat() * 60).toInteger()
             def minGate         = Math.min(intervalMinutes * 0.5, 30.0).toInteger()
             paragraph "✅ Scan started — ${devList.size()} device(s) processing in the background. " +
-                      "Health scores and device states update progressively as batches complete.<br><br>" +
+                      "Health scores update progressively as batches complete.<br><br>" +
                       "<b>Note:</b> A new check-in sample is only recorded if at least <b>${minGate} minutes</b> have passed since the last recorded activity."
         }
     }
@@ -3501,15 +3422,16 @@ def scheduledSummary() {
         "Excellent": [emoji: "🟢", enabled: settings?.notifyExcellent ?: false, list: []]
     ]
 
+    // NOTE: Notification lines no longer include device state (on/off, open/closed,
+    // etc.) — only device name and last-seen time, since state is not part of this
+    // app's output.
     devList.each { device ->
         if (!isDeviceSnoozed(device.id as String)) {
             def h = state.health?.get(device.id) ?: "Pending"
             if (sections.containsKey(h)) {
-                def stateInfo = getCurrentStateDisplay(device)
-                def stateStr  = stateInfo ? " [${stateInfo.label}]" : ""
                 def lastStr   = state.history?.get(device.id)?.lastSeen
                     ? ", last seen ${formatTimeAgo(state.history[device.id].lastSeen)}" : ""
-                sections[h].list << "${device.displayName.trim()}${stateStr}${lastStr}"
+                sections[h].list << "${device.displayName.trim()}${lastStr}"
             }
         }
     }
@@ -3548,8 +3470,8 @@ def infoPage(Map params = [:]) {
                       "<b>SPA Architecture:</b> The portal shell loads instantly, then fetches device data asynchronously. Even with 200+ devices the portal opens immediately.<br><br>" +
                       "<b>How to enable:</b> Go to Apps Code → Device Health Monitor → OAuth (top right) → Enable → Update. " +
                       "Then open the app and tap Done. Cloud and Local URLs appear at the top of the main page.<br><br>" +
-                      "<b>What it shows:</b> All devices with health rating, protocol, current state, last check-in, avg check-in, location, and description. " +
-                      "Summary cards show Offline, Poor, Fair, Healthy, and Total counts.<br><br>" +
+                      "<b>What it shows:</b> All devices with health rating, protocol, last check-in, avg check-in, location, and description. " +
+                      "Summary cards show Offline, Poor, Fair, Healthy, and Total counts. Device state (on/off, open/closed, etc.) is not shown.<br><br>" +
                       "<b>Group by:</b> Toggle between By Protocol, By Health, and By Location using the dropdown on the portal.<br><br>" +
                       "<b>Edit from portal:</b> Tap any device card to update location and description without opening the Hubitat app.<br><br>" +
                       "<b>Force Scan:</b> The Force Scan button triggers an immediate batch scan from the browser.<br><br>" +
@@ -3599,7 +3521,7 @@ def infoPage(Map params = [:]) {
 
         section("<b>🔄 Verification (Ping / Refresh / State)</b>") {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "When a device enters Poor or Offline the app attempts to confirm it is still reachable before firing a notification.<br><br>" +
+                      "When a device enters Poor or Offline the app attempts to confirm it is still reachable before firing a notification. Note: this uses internal state-change tracking purely to inform health scoring — no device state is shown anywhere in this app's output.<br><br>" +
                       "<b>Step 1 — State-change check:</b> If the device fired any state change event after its last recorded check-in and within the offline threshold window, it is marked ✅ State verified — no ping needed.<br><br>" +
                       "<b>Step 2 — Refresh / Ping:</b> If no recent state change is found, the app sends refresh() or ping() to the device directly.<br><br>" +
                       "<b>Hold-at-Fair:</b> When a pingable device enters Poor for the first time, it is held at Fair for one scan cycle while the ping is sent. If it responds it recovers on its own without ever reaching Poor. If it doesn't respond it is confirmed Poor on the next scan.<br><br>" +
@@ -3630,12 +3552,12 @@ def infoPage(Map params = [:]) {
 
         section("<b>📋 Version History</b>", hideable: true, hidden: true) {
             paragraph rawHtml: true, "<div style='background-color:#f8f8f8; border:1px solid #dddddd; border-radius:6px; padding:10px; margin-bottom:4px;'>" +
-                      "<b>v1.5.10</b> — Bug fix: scan pipeline stalling silently with no error logged, on installs with many devices and weeks of history<br>" +
+                      "<b>v1.5.10</b> — Bug fix: scan pipeline stalling silently with no error logged, on installs with many devices and weeks of history. Also: removed device current-state (on/off, open/closed, etc.) from all app output — Activity Summary, Hub Mesh Overview, Problem Devices, the web portal, the JSON data endpoint, and notification text. State-change tracking is retained internally only to support health verification scoring.<br>" +
                       "<span style='color:#475569;font-size:12px;'>Groovy's BigDecimal division and multiplication don't auto-round — and since each check-in sample is smoothed from the previous sample recursively (<code>smoothed = alpha * elapsed + (1-alpha) * prevSmooth</code>), decimal precision compounded every single scan with nothing ever resetting it. After weeks of scans this bloated <code>state.history</code> samples from a few characters each to 40+ digit BigDecimals, ballooning total app state size (671KB observed across 142 devices, 94% of it in <code>history</code> alone) to the point where the scan pipeline could stall before <code>processScanChunk()</code> ever ran — with no error logged, since the failure occurred at the state-persistence layer rather than as a caught exception. Elapsed and smoothed values are now rounded to 2 decimal places at the point of computation, and a one-time migration on update rounds all existing stored samples and <code>avgInterval</code> values back down. No action needed beyond opening the app and tapping Done once after updating — the cleanup runs automatically on initialize, and Force Scan should complete normally afterward.</span><br><br>" +
                       "<b>v1.5.9</b> — Bug fix: quiet-but-fine Z-Wave/Zigbee devices stuck cycling Poor/Offline forever, with no bounded way to confirm a real outage<br>" +
-                      "<span style='color:#475569;font-size:12px;'>Generic <code>device.refresh()</code>/<code>device.ping()</code> only proves the mesh accepted the command — Hubitat does not wait for or expose any delivery acknowledgment from the device, unlike a Hue Bridge or Konnected Panel refresh, which is a real network round-trip. Previously this meant a quiet-but-reachable Z-Wave/Zigbee switch (one that rarely changes state, so <code>getLastActivity()</code> never advances after a refresh) had no path to Quiet status at all — it would cycle Poor → Offline forever even though refresh kept succeeding every scan. Generic refresh/ping success now gets the same immediate Fair-cap (\"Quiet\") treatment Hue/Konnected already had, but tagged as <i>provisional (\"weak\")</i> trust rather than full confirmation, since a clean refresh call still isn't proof of actual delivery. Weak trust is capped at 2× your Offline Threshold (default 14 days) of continuous unconfirmed riding; once exceeded, trust is force-cleared and the device is guaranteed to show a real Poor/Offline for at least one full Offline Threshold (default 7 days) before weak trust can be granted again — so a device that never once genuinely checks in can't be hidden from you forever, while devices that are simply idle still get the same breathing room as before. Any genuine confirmation (a real check-in, a real state-change event, or a Hue/Konnected bridge round-trip) immediately upgrades a device to full (\"confirmed\") trust, which has no ceiling — it's already covered by the existing v1.5.7 periodic re-verification. The app page, Activity Summary, Problem Devices page, and web portal all now show a distinct badge/label for provisional (\"🔄 Verified (auto)\" / \"responded to refresh — unconfirmed\") vs. confirmed (\"✅ Verified\" / \"verified reachable\") status, so it's clear at a glance which devices have actually proven themselves. Also fixed: the web portal's per-device label never showed \"Quiet\" for Fair+verified devices — it only used that distinction for the summary counts and Active Issues filtering — so the portal card text now matches the Hubitat app page. Also fixed: the auto-reset-on-recovery block only wrote capability data back when clearing a failed ping status, silently leaving stale weak-trust timestamps in place on every other recovery.</span><br><br>" +
+                      "<span style='color:#475569;font-size:12px;'>Generic <code>device.refresh()</code>/<code>device.ping()</code> only proves the mesh accepted the command — Hubitat does not wait for or expose any delivery acknowledgment from the device, unlike a Hue Bridge or Konnected Panel refresh, which is a real network round-trip. Previously this meant a quiet-but-reachable Z-Wave/Zigbee switch (one that rarely changes state, so <code>getLastActivity()</code> never advances after a refresh) had no path to Quiet status at all — it would cycle Poor → Offline forever even though refresh kept succeeding every scan. Generic refresh/ping success now gets the same immediate Fair-cap (\"Quiet\") treatment Hue/Konnected already had, but tagged as <i>provisional (\"weak\")</i> trust rather than full confirmation, since a clean refresh call still isn't proof of actual delivery. Weak trust is capped at 2× your Offline Threshold (default 14 days) of continuous unconfirmed riding; once exceeded, trust is force-cleared and the device is guaranteed to show a real Poor/Offline for at least one full Offline Threshold (default 7 days) before weak trust can be granted again — so a device that never once genuinely checks in can't be hidden from you forever, while devices that are simply idle still get the same breathing room as before. Any genuine confirmation (a real check-in, a real state-change event, or a Hue/Konnected bridge round-trip) immediately upgrades a device to full (\"confirmed\") trust, which has no ceiling — it's already covered by the existing v1.5.7 periodic re-verification. Also fixed: the auto-reset-on-recovery block only wrote capability data back when clearing a failed ping status, silently leaving stale weak-trust timestamps in place on every other recovery.</span><br><br>" +
                       "<b>v1.5.8</b> — Bug fix: Hue/Konnected bulbs and sensors that sit unused for weeks stuck at Offline/Verifiable<br>" +
-                      "<span style='color:#475569;font-size:12px;'>Hue and Konnected verification works by refreshing the Bridge/Panel, not the device itself. A Bridge poll returns the full current state of every bulb whether or not it changed — but Hubitat's CoCoHue integration only emits a new event when a value actually changes. A bulb that's been off and untouched for weeks therefore never produced a fresh timestamp, so <code>pingWorks</code> never flipped to <code>true</code> even though the Bridge refresh itself was succeeding every time. A successful Bridge/Panel refresh is now treated as immediate proof of reachability — it stamps <code>pingWorks=true</code> directly instead of waiting for an event that may never come. <code>lastSeen</code> and learned baseline intervals are deliberately left untouched so this doesn't get recorded as a real check-in sample. The display now also updates within the same scan rather than the next one, and the old every-other-scan verification throttle was removed — so a single Force Scan fully resolves a Hue/Konnected device to ✅ Verified /  Quiet instead of needing 2-3 taps. Devices on the plain refresh/ping path still depend on the device itself responding, so those are unaffected by this change. Also fixed: Konnected devices that failed verification (no panel found, or panel refresh failed) weren't being marked Unverifiable — they now are. Active Issues (both the app page and the web portal) no longer lists Quiet/verified devices as problems — a confirmed-reachable idle device isn't an issue, so it's now grouped with healthy devices instead, and the Fair count in the summary no longer includes it.</span><br><br>" +
+                      "<span style='color:#475569;font-size:12px;'>Hue and Konnected verification works by refreshing the Bridge/Panel, not the device itself. A Bridge poll returns the full current state of every bulb whether or not it changed — but Hubitat's CoCoHue integration only emits a new event when a value actually changes. A bulb that's been off and untouched for weeks therefore never produced a fresh timestamp, so <code>pingWorks</code> never flipped to <code>true</code> even though the Bridge refresh itself was succeeding every time. A successful Bridge/Panel refresh is now treated as immediate proof of reachability — it stamps <code>pingWorks=true</code> directly instead of waiting for an event that may never come. <code>lastSeen</code> and learned baseline intervals are deliberately left untouched so this doesn't get recorded as a real check-in sample. Also fixed: Konnected devices that failed verification (no panel found, or panel refresh failed) weren't being marked Unverifiable — they now are. Active Issues (both the app page and the web portal) no longer lists Quiet/verified devices as problems — a confirmed-reachable idle device isn't an issue, so it's now grouped with healthy devices instead, and the Fair count in the summary no longer includes it.</span><br><br>" +
                       "<b>v1.5.7</b> — Bug fix: Stale ping verification masking dead battery devices<br>" +
                       "<span style='color:#475569;font-size:12px;'>In v1.5.6 the \"Quiet verified reachable\" label was introduced but <code>pingWorks=true</code> had no expiry. A device with a dead battery (e.g. a button or sensor) could be permanently held at Quiet and never escalate to Poor or Offline. Verification trust now expires after your configured Offline Threshold. When trust expires the app clears <code>pingWorks</code> and the fairHold gate gets a fresh re-verification attempt before escalating to Poor then Offline. No action needed — updates automatically on next scan.</span><br><br>" +
                       "<b>v1.5.6</b> — Added \"Quiet verified reachable\" display for Fair+verified devices. Added <code>lastKnownStateDate</code> tracking so verified refresh responses advance <code>lastSeen</code> even when <code>getLastActivity()</code> does not update (common in Z-Wave).<br><br>" +
