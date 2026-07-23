@@ -1677,7 +1677,7 @@ def scanAllDevices() {
         return
     }
 
-    log.info "Device Health Monitor: scan started — ${devList.size()} device(s) queued"
+//    log.info "Device Health Monitor: scan started — ${devList.size()} device(s) queued"
     state.isScanning    = true
     state.scanStartTime = nowMs
     state.tempResults   = []
@@ -1727,7 +1727,7 @@ def processScanChunk() {
     def remaining    = queue.drop(chunkSize)
     state.scanQueue  = remaining
     def batchNum     = Math.ceil(totalDevices / chunkSize).toInteger() - Math.ceil(remaining.size() / chunkSize).toInteger()
-    log.info "Device Health Monitor: scanning batch ${batchNum} — ${chunk.size()} devices (${remaining.size()} remaining)"
+//    log.info "Device Health Monitor: scanning batch ${batchNum} — ${chunk.size()} devices (${remaining.size()} remaining)"
 
     def allDevs         = getAllMonitoredDevices()
     def intervalStr     = settings?.scanInterval ?: "3"
@@ -1885,7 +1885,7 @@ def finalizeScan() {
     state.scanStartTime = null
     state.tempResults   = []
     state.scanQueue     = []
-    log.info "Device Health Monitor: scan complete — all devices processed"
+//    log.info "Device Health Monitor: scan complete — all devices processed"
 }
 
 // ============================================================
