@@ -3491,7 +3491,7 @@ def scheduledSummary() {
         else { postfix = tags }
     }
 
-    def body = "${prefix} Device Health Summary\n"
+    def body = ""
 
     def sections = [
         "Offline":   [emoji: "", enabled: settings?.notifyOffline   != false, list: []],
