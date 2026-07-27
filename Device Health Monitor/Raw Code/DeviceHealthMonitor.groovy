@@ -11,7 +11,7 @@ definition(
     author: "jdthomas24",
     description: "Monitor device check-in health across Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable — learns each device's normal pattern and alerts you when something goes quiet. Includes OAuth web portal, SPA dashboard, batch scanning, location grouping, and richer notifications.",
     category: "Convenience",
-    importUrl: "https://raw.githubusercontent.com/theCAZ/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
+    importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Device%20Health%20Monitor/Raw%20Code/DeviceHealthMonitor.groovy",
     iconUrl: "",
     iconX2Url: "",
     version: "1.5.11",
@@ -1244,8 +1244,8 @@ def mainPage() {
                   required: false
 
             paragraph "<b>Report Sections:</b>"
-            input "notifyOffline",       "bool", title: " Include Offline devices",              defaultValue: true
-            input "notifyPoor",          "bool", title: " Include Poor health devices",           defaultValue: true
+            input "notifyOffline",       "bool", title: "💀 Include Offline devices",              defaultValue: true
+            input "notifyPoor",          "bool", title: "🔴 Include Poor health devices",           defaultValue: true
             input "notifyFair",          "bool", title: "🟠 Include Fair health devices",           defaultValue: true
             input "notifyGood",          "bool", title: "🟢 Include Good health devices",           defaultValue: false
             input "notifyExcellent",     "bool", title: "🟢 Include Excellent health devices",      defaultValue: false
@@ -2275,8 +2275,8 @@ def getHealthDisplay(device) {
     }
     if (h in ["Poor", "Offline"]) {
         def baseDisplay = h == "Poor"
-            ? " Poor"
-            : " <span style='color:#991b1b;font-weight:bold;'>Offline</span>"
+            ? "🔴 Poor"
+            : "💀 <span style='color:#991b1b;font-weight:bold;'>Offline</span>"
 
         def lowActivity  = isLowActivity(device.id as String)
         def repeatDrops  = isRepeatDrops(device.id as String)
@@ -2332,8 +2332,8 @@ def getHealthEmoji(h) {
         case "Excellent": return "🟢"
         case "Good":      return "🟢"
         case "Fair":      return "🟠"
-        case "Poor":      return ""
-        case "Offline":   return ""
+        case "Poor":      return "🔴"
+        case "Offline":   return "💀"
         default:          return "⏳"
     }
 }
@@ -2622,7 +2622,7 @@ function silentRefresh() {
 }
 
 function healthIcon(h) {
-    return {Offline:,Poor:,Fair:,Good:'🟢',Excellent:'🟢',Pending:'⏳'}[h] || '⏳';
+    return {Offline:'💀',Poor:'🔴',Fair:'🟠',Good:'🟢',Excellent:'🟢',Pending:'⏳'}[h] || '⏳';
 }
 
 function healthLabel(dev) {
@@ -2982,11 +2982,11 @@ def hubMeshSummaryPage() {
             def bannerHtml = ""
             groups.each { srcHub, counts ->
                 def worstColor = counts.offline > 0 ? "#991b1b" : counts.poor > 0 ? "#c62828" : counts.fair > 0 ? "#ea580c" : "#16a34a"
-                def worstLabel = counts.offline > 0 ? " Offline devices present" : counts.poor > 0 ? " Poor devices present" : counts.fair > 0 ? "🟠 Fair devices present" : "🟢 All healthy"
+                def worstLabel = counts.offline > 0 ? "💀 Offline devices present" : counts.poor > 0 ? "🔴 Poor devices present" : counts.fair > 0 ? "🟠 Fair devices present" : "🟢 All healthy"
                 bannerHtml += "<div style='background:#f0f0f0; border-left:4px solid ${worstColor}; padding:8px 10px; margin-bottom:8px; border-radius:3px;'>"
                 bannerHtml += "<b>${srcHub}</b> &nbsp;·&nbsp; ${counts.total} device(s) &nbsp;·&nbsp; <span style='color:${worstColor};'>${worstLabel}</span><br><small>"
-                if (counts.offline   > 0) bannerHtml += " Offline: ${counts.offline}&nbsp; "
-                if (counts.poor      > 0) bannerHtml += " Poor: ${counts.poor}&nbsp; "
+                if (counts.offline   > 0) bannerHtml += "💀 Offline: ${counts.offline}&nbsp; "
+                if (counts.poor      > 0) bannerHtml += "🔴 Poor: ${counts.poor}&nbsp; "
                 if (counts.fair      > 0) bannerHtml += "🟠 Fair: ${counts.fair}&nbsp; "
                 if (counts.good      > 0) bannerHtml += "🟢 Good: ${counts.good}&nbsp; "
                 if (counts.excellent > 0) bannerHtml += "🟢 Excellent: ${counts.excellent}&nbsp; "
@@ -3085,8 +3085,8 @@ def problemDevicesPage() {
             def fairCount = problems.count { state.health?.get(it.id) == "Fair"    }
 
             paragraph "Active Issues: " +
-                "<b><span style='color:#991b1b;'> ${offCount} Offline</span></b> &nbsp;|&nbsp; " +
-                "<b><span style='color:#ef4444;'> ${poorCount} Poor</span></b> &nbsp;|&nbsp; " +
+                "<b><span style='color:#991b1b;'>💀 ${offCount} Offline</span></b> &nbsp;|&nbsp; " +
+                "<b><span style='color:#ef4444;'>🔴 ${poorCount} Poor</span></b> &nbsp;|&nbsp; " +
                 "<b><span style='color:#f97316;'>🟠 ${fairCount} Fair</span></b>" +
                 "<br>Verification: " +
                 "<b><span style='color:#22c55e;'>✅ ${verified} Verified</span></b> &nbsp;|&nbsp; " +
@@ -3491,12 +3491,12 @@ def scheduledSummary() {
         else { postfix = tags }
     }
 
-    def body = ""
+    def body = "${prefix}📡 Device Health Summary\n"
 
     def sections = [
-        "<u>&nbspOffline&nbsp</u>":   [emoji: "", enabled: settings?.notifyOffline   != false, list: []],
-        "<u>&nbspPoor&nbsp</u>":      [emoji: "", enabled: settings?.notifyPoor      != false, list: []],
-        "<u>&nbspFair&nbsp</u>":      [emoji: "", enabled: settings?.notifyFair      != false, list: []],
+        "Offline":   [emoji: "💀", enabled: settings?.notifyOffline   != false, list: []],
+        "Poor":      [emoji: "🔴", enabled: settings?.notifyPoor      != false, list: []],
+        "Fair":      [emoji: "🟠", enabled: settings?.notifyFair      != false, list: []],
         "Good":      [emoji: "🟢", enabled: settings?.notifyGood      ?: false, list: []],
         "Excellent": [emoji: "🟢", enabled: settings?.notifyExcellent ?: false, list: []]
     ]
@@ -3521,8 +3521,8 @@ def scheduledSummary() {
 
     sections.each { health, data ->
         if (data.enabled) {
-            body += "\n${data.emoji} ${health}\n"
-            if (data.list) { data.list.each { name -> body += "${name}\n" } }
+            body += "\n${data.emoji} ${health}:\n"
+            if (data.list) { data.list.each { name -> body += "• ${name}\n" } }
             else { body += "None\n" }
         }
     }
@@ -3581,8 +3581,8 @@ def infoPage(Map params = [:]) {
                       "<tr><td style='padding:4px 8px;'>🟢 Good</td><td style='padding:4px 8px;'>Checking in within 3× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟠 Fair</td><td style='padding:4px 8px;'>Checking in within 6× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟠 Quiet</td><td style='padding:4px 8px;'>Fair health but reachability has been confirmed — device is idle, not unreachable. Two flavors: <b>verified reachable</b> (a real check-in, state event, or Hue/Konnected Bridge round-trip — trusted indefinitely, re-checked every Offline Threshold) and <b>responded to refresh — unconfirmed</b> (a plain Zigbee/Z-Wave refresh/ping that didn't throw, which isn't proof the device actually received it — see Verification section below). The unconfirmed kind is capped at 2× the Offline Threshold, after which it's forced to show a real Poor/Offline for a full Offline Threshold window before it can go Quiet again — so a device that never genuinely checks in can't be masked forever.</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'> Poor</td><td style='padding:4px 8px;'>Checking in beyond 6× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'> Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity unverifiable devices are capped at Poor.</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>🔴 Poor</td><td style='padding:4px 8px;'>Checking in beyond 6× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'>💀 Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity unverifiable devices are capped at Poor.</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>😴 Snoozed</td><td style='padding:4px 8px;'>Excluded from notifications for a set duration</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>ℹ️ Low Activity</td><td style='padding:4px 8px;'>Monitored 7+ days with fewer than 3 samples — infrequently used device</td></tr>" +
                       "</table></div></div>"
