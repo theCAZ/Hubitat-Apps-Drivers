@@ -688,14 +688,14 @@ def getOverrideStateDisplay(device, attrName) {
             case "printerStatus":
                 def isPrint = vl in ["printing", "busy"]
                 def isPause = vl in ["paused", "pausing"]
-                def isError = vl in ["error", "offline", "disconnected", "cancelled"]
+                def isError = vl in ["error", "<u>&nbspOffline&nbsp</u>", "disconnected", "cancelled"]
                 def color   = isPrint ? "#1565c0" : isPause ? "#e65100" :
                               isError ? "#c62828" : "#c0c4cc"
                 return [label: vs.capitalize(), color: color, isAlert: isError, type: attrName]
             default:
                 def isActive = vl in ["on", "active", "connected", "online", "running",
                                       "enabled", "playing", "present", "open"]
-                def isAlert  = vl in ["offline", "disconnected", "error", "fault", "alarm",
+                def isAlert  = vl in ["<u>&nbspOffline&nbsp</u>", "disconnected", "error", "fault", "alarm",
                                       "wet", "detected"]
                 def color    = isAlert ? "#c62828" : isActive ? "#1565c0" : "#c0c4cc"
                 return [label: vs.capitalize(), color: color, isAlert: isAlert, type: attrName]
@@ -773,7 +773,7 @@ def getCurrentStateDisplay(device) {
                 def isPrint = ps in ["printing", "busy"]
                 def isIdle  = ps in ["idle", "ready", "operational", "standby", "complete"]
                 def isPause = ps in ["paused", "pausing"]
-                def isError = ps in ["error", "offline", "disconnected", "cancelled"]
+                def isError = ps in ["error", "<u>&nbspOffline&nbsp</u>", "disconnected", "cancelled"]
                 def color   = isPrint ? "#1565c0" : isIdle ? "#c0c4cc" :
                               isPause ? "#e65100" : isError ? "#c62828" : "#c0c4cc"
                 return [label: printerStatus.toString().capitalize(), color: color, isAlert: isError, type: "printerStatus"]
@@ -1002,7 +1002,7 @@ def getLANStateDisplay(device) {
             if (val.contains(": ")) continue
             def isActive = vl in ["on", "active", "connected", "online", "running",
                                    "enabled", "open", "playing", "present", "idle", "ready", "operational"]
-            def isAlert  = vl in ["offline", "disconnected", "error", "fault", "alarm", "wet", "detected"]
+            def isAlert  = vl in ["<u>&nbspOffline&nbsp</u>", "disconnected", "error", "fault", "alarm", "wet", "detected"]
             def color    = isAlert ? "#c62828" : isActive ? "#1565c0" : "#c0c4cc"
             return [label: val.capitalize(), color: color, isAlert: isAlert, type: attr]
         }
@@ -1064,7 +1064,7 @@ def buildHubMeshSummary() {
         groups[srcHub].total++
         def h = state.health?.get(device.id) ?: "Pending"
         switch (h) {
-            case "Offline":   groups[srcHub].offline++;   break
+            case "<u>&nbspOffline&nbsp</u>":   groups[srcHub].offline++;   break
             case "Poor":      groups[srcHub].poor++;      break
             case "Fair":      groups[srcHub].fair++;      break
             case "Good":      groups[srcHub].good++;      break
@@ -1904,7 +1904,7 @@ def updateHealth(device) {
     def minutesSinceLastSeen = (now() - (data.lastSeen ?: now())) / (1000 * 60)
 
     if (minutesSinceLastSeen >= offlineThreshold) {
-        state.health[id] = "Offline"
+        state.health[id] = "<u>&nbspOffline&nbsp</u>"
     } else {
         // v1.5.3: Protocol-aware minimum baseline floor
         // Prevents burst-usage devices (Apple TV, media players, LAN devices) from
@@ -1953,7 +1953,7 @@ def updateHealth(device) {
     // If it responds before then → recovers on its own, never reaches Poor.
     if (currentHealth == "Poor") {
         def prevH = state.prevHealth?.get(id as String)
-        if (prevH != "Poor" && prevH != "Offline") {
+        if (prevH != "Poor" && prevH != "<u>&nbspOffline&nbsp</u>") {
             def capChk     = state.deviceCapabilities?.get(id as String) ?: [:]
             def isPingable = capChk.pingWorks == true ||
                              capChk.declared  == true ||
@@ -2003,7 +2003,7 @@ def updateHealth(device) {
     // a real Poor/Offline for a full Offline Threshold window before weak
     // trust can be granted again. This is what stops a never-confirmed device
     // from being masked as "Quiet" forever.
-    if (currentHealth in ["Poor", "Offline"]) {
+    if (currentHealth in ["Poor", "<u>&nbspOffline&nbsp</u>"]) {
         def capChk = state.deviceCapabilities?.get(id as String) ?: [:]
         if (capChk.pingWorks == true) {
             def isWeak        = capChk.pingTrustSource == "weak"
@@ -2051,7 +2051,7 @@ def updateHealth(device) {
     }
 
     def prevHealth = state.prevHealth?.get(id as String)
-    if (currentHealth in ["Poor", "Offline"] && !(prevHealth in ["Poor", "Offline"])) {
+    if (currentHealth in ["Poor", "<u>&nbspOffline&nbsp</u>"] && !(prevHealth in ["Poor", "<u>&nbspOffline&nbsp</u>"])) {
         def dropMap  = state.dropHistory ?: [:]
         def drops    = dropMap[id as String] ?: []
         drops << now()
@@ -2070,7 +2070,7 @@ def updateHealth(device) {
     // weak-trust ceiling/cooldown tracking too (previously this only wrote
     // capMapR back when pingWorks was false, silently leaving stale weak-trust
     // timestamps behind on the unconditional path).
-    if (currentHealth in ["Good", "Excellent"] && prevHealth in ["Poor", "Offline"]) {
+    if (currentHealth in ["Good", "Excellent"] && prevHealth in ["Poor", "<u>&nbspOffline&nbsp</u>"]) {
         def capMapR  = state.deviceCapabilities ?: [:]
         def capKeyR  = id as String
         def capDataR = capMapR[capKeyR] ?: [:]
@@ -2091,7 +2091,7 @@ def updateHealth(device) {
     prevMap[id as String] = currentHealth
     state.prevHealth = prevMap
 
-    if (!(currentHealth in ["Poor", "Offline"])) {
+    if (!(currentHealth in ["Poor", "<u>&nbspOffline&nbsp</u>"])) {
         state.verifying?.remove(id)
         return
     }
@@ -2250,7 +2250,7 @@ def updateHealth(device) {
     capMapH[capKeyH]         = capDataH
     state.deviceCapabilities = capMapH
 
-    if (currentHealth == "Offline" &&
+    if (currentHealth == "<u>&nbspOffline&nbsp</u>" &&
         isLowActivity(id as String) &&
         verifyMethod in ["none", "virtual", "hue_no_bridge", "hue_bridge_failed", "failed"]) {
         state.health[id] = "Poor"
@@ -2273,7 +2273,7 @@ def getHealthDisplay(device) {
     if (h == "Pending") {
         return "<span style='color:#94a3b8;'>⏳ Pending (${samples}/3 samples)</span>"
     }
-    if (h in ["Poor", "Offline"]) {
+    if (h in ["Poor", "<u>&nbspOffline&nbsp</u>"]) {
         def baseDisplay = h == "Poor"
             ? " Poor"
             : " <span style='color:#991b1b;font-weight:bold;'>Offline</span>"
@@ -2333,7 +2333,7 @@ def getHealthEmoji(h) {
         case "Good":      return "🟢"
         case "Fair":      return ""
         case "Poor":      return ""
-        case "Offline":   return ""
+        case "<u>&nbspOffline&nbsp</u>":   return ""
         default:          return "⏳"
     }
 }
@@ -2520,7 +2520,7 @@ def serveDataEndpoint() {
             ]
         }
 
-        def healthOrder = ["Offline": 1, "Poor": 2, "Fair": 3, "Good": 4, "Excellent": 5, "Pending": 6]
+        def healthOrder = ["<u>&nbspOffline&nbsp</u>": 1, "Poor": 2, "Fair": 3, "Good": 4, "Excellent": 5, "Pending": 6]
         estate = estate.sort { a, b ->
             def pA = healthOrder[a.health] ?: 6
             def pB = healthOrder[b.health] ?: 6
@@ -2876,7 +2876,7 @@ def activitySummaryPage() {
             if (!devList) { paragraph "No devices found. Please select devices on the main page first."; return }
 
             devList = devList.sort { a, b ->
-                def healthPriority = ["Offline": 1, "Poor": 2, "Fair": 3, "Good": 4, "Excellent": 5, "Pending": 6]
+                def healthPriority = ["<u>&nbspOffline&nbsp</u>": 1, "Poor": 2, "Fair": 3, "Good": 4, "Excellent": 5, "Pending": 6]
                 def hA = state.health?.get(a.id) ?: "Pending"
                 def hB = state.health?.get(b.id) ?: "Pending"
                 def pA = healthPriority[hA] ?: 6
@@ -2916,7 +2916,7 @@ def activitySummaryPage() {
                                   data?.avgInterval  ? formatInterval(data.avgInterval) : "Learning..."
 
                 def h            = state.health?.get(device.id) ?: "Pending"
-                def healthOrder  = snoozed ? 99 : (h == "Offline" ? 1 : h == "Poor" ? 2 : h == "Fair" ? 3 : h == "Good" ? 4 : h == "Excellent" ? 5 : 6)
+                def healthOrder  = snoozed ? 99 : (h == "<u>&nbspOffline&nbsp</u>" ? 1 : h == "Poor" ? 2 : h == "Fair" ? 3 : h == "Good" ? 4 : h == "Excellent" ? 5 : 6)
                 def stateInfo    = getCurrentStateDisplay(device)
                 def stateDisplay = stateInfo ? formatStateDisplay(stateInfo) : "—"
                 def stateOrderVal = stateInfo ? stateInfo.label.toLowerCase() : "zzz"
@@ -3009,7 +3009,7 @@ def hubMeshSummaryPage() {
                 def srcA = getHubMeshSourceHub(a)
                 def srcB = getHubMeshSourceHub(b)
                 if (srcA != srcB) return srcA <=> srcB
-                def healthPriority = ["Offline": 1, "Poor": 2, "Fair": 3, "Good": 4, "Excellent": 5, "Pending": 6]
+                def healthPriority = ["<u>&nbspOffline&nbsp</u>": 1, "Poor": 2, "Fair": 3, "Good": 4, "Excellent": 5, "Pending": 6]
                 def hA = state.health?.get(a.id) ?: "Pending"
                 def hB = state.health?.get(b.id) ?: "Pending"
                 return (healthPriority[hA] ?: 6) <=> (healthPriority[hB] ?: 6)
@@ -3057,11 +3057,11 @@ def problemDevicesPage() {
 
         def problems = allDevs.findAll { device ->
             def h = state.health?.get(device.id) ?: "Pending"
-            h in ["Offline", "Poor", "Fair"] &&
+            h in ["<u>&nbspOffline&nbsp</u>", "Poor", "Fair"] &&
                 !isQuietVerified(device.id as String) &&
                 !isDeviceSnoozed(device.id as String)
         }.sort { a, b ->
-            def pri = ["Offline": 1, "Poor": 2, "Fair": 3]
+            def pri = ["<u>&nbspOffline&nbsp</u>": 1, "Poor": 2, "Fair": 3]
             def pA  = pri[state.health?.get(a.id)] ?: 4
             def pB  = pri[state.health?.get(b.id)] ?: 4
             if (pA != pB) return pA <=> pB
@@ -3080,7 +3080,7 @@ def problemDevicesPage() {
         def unknownCount = allDevs.findAll { getPingStatus(it.id) == "unknown"   }.size()
 
         section("") {
-            def offCount  = problems.count { state.health?.get(it.id) == "Offline" }
+            def offCount  = problems.count { state.health?.get(it.id) == "<u>&nbspOffline&nbsp</u>" }
             def poorCount = problems.count { state.health?.get(it.id) == "Poor"    }
             def fairCount = problems.count { state.health?.get(it.id) == "Fair"    }
 
@@ -3494,7 +3494,7 @@ def scheduledSummary() {
     def body = ""
 
     def sections = [
-        "Offline":   [emoji: "", enabled: settings?.notifyOffline   != false, list: []],
+        "<u>&nbspOffline&nbsp</u>":   [emoji: "", enabled: settings?.notifyOffline   != false, list: []],
         "Poor":      [emoji: "", enabled: settings?.notifyPoor      != false, list: []],
         "Fair":      [emoji: "", enabled: settings?.notifyFair      != false, list: []],
         "Good":      [emoji: "🟢", enabled: settings?.notifyGood      ?: false, list: []],
