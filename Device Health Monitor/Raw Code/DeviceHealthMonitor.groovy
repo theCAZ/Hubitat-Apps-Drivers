@@ -1244,9 +1244,9 @@ def mainPage() {
                   required: false
 
             paragraph "<b>Report Sections:</b>"
-            input "notifyOffline",       "bool", title: "💀 Include Offline devices",              defaultValue: true
-            input "notifyPoor",          "bool", title: "🔴 Include Poor health devices",           defaultValue: true
-            input "notifyFair",          "bool", title: "🟠 Include Fair health devices",           defaultValue: true
+            input "notifyOffline",       "bool", title: " Include Offline devices",              defaultValue: true
+            input "notifyPoor",          "bool", title: " Include Poor health devices",           defaultValue: true
+            input "notifyFair",          "bool", title: " Include Fair health devices",           defaultValue: true
             input "notifyGood",          "bool", title: "🟢 Include Good health devices",           defaultValue: false
             input "notifyExcellent",     "bool", title: "🟢 Include Excellent health devices",      defaultValue: false
             input "suppressEmptyReport", "bool", title: "🔕 Don't send notification if nothing to report", defaultValue: false
@@ -2275,8 +2275,8 @@ def getHealthDisplay(device) {
     }
     if (h in ["Poor", "Offline"]) {
         def baseDisplay = h == "Poor"
-            ? "🔴 Poor"
-            : "💀 <span style='color:#991b1b;font-weight:bold;'>Offline</span>"
+            ? " Poor"
+            : " <span style='color:#991b1b;font-weight:bold;'>Offline</span>"
 
         def lowActivity  = isLowActivity(device.id as String)
         def repeatDrops  = isRepeatDrops(device.id as String)
@@ -2309,7 +2309,7 @@ def getHealthDisplay(device) {
             def lowActivity = isLowActivity(device.id as String)
             def extStateTag = getExtendedStateTag(device)
             def lowSuffix   = (lowActivity && !extStateTag) ? " <span style='color:#94a3b8;font-size:10px;'>ℹ️ Low Activity Device</span>" : ""
-            def healthEmoji = h == "Fair" ? "🟠" : "🟢"
+            def healthEmoji = h == "Fair" ? "" : "🟢"
             // v1.5.6: Verified + Fair devices display as "Quiet" — reachable but idle
             // v1.5.9: distinguish "weak" (provisional, refresh/ping didn't throw) from
             // "confirmed" (real lastSeen advance, state event, or Hue/Konnected bridge)
@@ -2331,9 +2331,9 @@ def getHealthEmoji(h) {
     switch (h) {
         case "Excellent": return "🟢"
         case "Good":      return "🟢"
-        case "Fair":      return "🟠"
-        case "Poor":      return "🔴"
-        case "Offline":   return "💀"
+        case "Fair":      return ""
+        case "Poor":      return ""
+        case "Offline":   return ""
         default:          return "⏳"
     }
 }
@@ -2622,7 +2622,7 @@ function silentRefresh() {
 }
 
 function healthIcon(h) {
-    return {Offline:'💀',Poor:'🔴',Fair:'🟠',Good:'🟢',Excellent:'🟢',Pending:'⏳'}[h] || '⏳';
+    return {Offline:'',Poor:'',Fair:'',Good:'🟢',Excellent:'🟢',Pending:'⏳'}[h] || '⏳';
 }
 
 function healthLabel(dev) {
@@ -2717,7 +2717,7 @@ function render() {
     let total    = estate.length;
     let scanning = db.isScanning ? "<span class='scanning-badge'>🔄 Scanning</span>" : "";
 
-    let html = "<h2>📡 Device Health</h2>";
+    let html = "<h2> Device Health</h2>";
     html += "<p class='subtitle'>Last scan: " + db.lastScan + scanning + "</p>";
 
     html += "<div class='summary-box'>";
@@ -2731,7 +2731,7 @@ function render() {
     html += "<div class='top-bar'>";
     html += "<a href='refresh?access_token=" + ACCESS_TOKEN + "' class='btn'>🔄 Force Scan</a>";
     html += "<select class='top-select' onchange='changeGroup(this.value)'>";
-    html += "<option value='protocol' " + (groupMode==='protocol'?'selected':'') + ">📡 By Protocol</option>";
+    html += "<option value='protocol' " + (groupMode==='protocol'?'selected':'') + "> By Protocol</option>";
     html += "<option value='health'   " + (groupMode==='health'  ?'selected':'') + ">❤️ By Health</option>";
     html += "<option value='location' " + (groupMode==='location'?'selected':'') + ">🏷️ By Location</option>";
     html += "</select>";
@@ -2830,7 +2830,7 @@ setInterval(silentRefresh, 60000);
                    "<div class='container'><div id='app'></div></div>" +
                    "<div id='editModal' class='modal-overlay' onclick='closeEdit()'>" +
                    "<div class='modal' onclick='event.stopPropagation()'>" +
-                   "<div class='modal-title'>📡 <span id='editDeviceName'></span></div>" +
+                   "<div class='modal-title'> <span id='editDeviceName'></span></div>" +
                    "<input type='hidden' id='editDeviceId'>" +
                    "<div style='background:#1a1a1a;border-radius:6px;padding:10px;margin-bottom:14px;font-size:12px;'>" +
                    "<div class='modal-row' style='border-bottom:1px solid #222;'><span>Health</span><span id='modalHealth'>—</span></div>" +
@@ -2982,12 +2982,12 @@ def hubMeshSummaryPage() {
             def bannerHtml = ""
             groups.each { srcHub, counts ->
                 def worstColor = counts.offline > 0 ? "#991b1b" : counts.poor > 0 ? "#c62828" : counts.fair > 0 ? "#ea580c" : "#16a34a"
-                def worstLabel = counts.offline > 0 ? "💀 Offline devices present" : counts.poor > 0 ? "🔴 Poor devices present" : counts.fair > 0 ? "🟠 Fair devices present" : "🟢 All healthy"
+                def worstLabel = counts.offline > 0 ? " Offline devices present" : counts.poor > 0 ? " Poor devices present" : counts.fair > 0 ? " Fair devices present" : "🟢 All healthy"
                 bannerHtml += "<div style='background:#f0f0f0; border-left:4px solid ${worstColor}; padding:8px 10px; margin-bottom:8px; border-radius:3px;'>"
                 bannerHtml += "<b>${srcHub}</b> &nbsp;·&nbsp; ${counts.total} device(s) &nbsp;·&nbsp; <span style='color:${worstColor};'>${worstLabel}</span><br><small>"
-                if (counts.offline   > 0) bannerHtml += "💀 Offline: ${counts.offline}&nbsp; "
-                if (counts.poor      > 0) bannerHtml += "🔴 Poor: ${counts.poor}&nbsp; "
-                if (counts.fair      > 0) bannerHtml += "🟠 Fair: ${counts.fair}&nbsp; "
+                if (counts.offline   > 0) bannerHtml += " Offline: ${counts.offline}&nbsp; "
+                if (counts.poor      > 0) bannerHtml += " Poor: ${counts.poor}&nbsp; "
+                if (counts.fair      > 0) bannerHtml += " Fair: ${counts.fair}&nbsp; "
                 if (counts.good      > 0) bannerHtml += "🟢 Good: ${counts.good}&nbsp; "
                 if (counts.excellent > 0) bannerHtml += "🟢 Excellent: ${counts.excellent}&nbsp; "
                 if (counts.pending   > 0) bannerHtml += "⏳ Pending: ${counts.pending}&nbsp; "
@@ -3085,9 +3085,9 @@ def problemDevicesPage() {
             def fairCount = problems.count { state.health?.get(it.id) == "Fair"    }
 
             paragraph "Active Issues: " +
-                "<b><span style='color:#991b1b;'>💀 ${offCount} Offline</span></b> &nbsp;|&nbsp; " +
-                "<b><span style='color:#ef4444;'>🔴 ${poorCount} Poor</span></b> &nbsp;|&nbsp; " +
-                "<b><span style='color:#f97316;'>🟠 ${fairCount} Fair</span></b>" +
+                "<b><span style='color:#991b1b;'> ${offCount} Offline</span></b> &nbsp;|&nbsp; " +
+                "<b><span style='color:#ef4444;'> ${poorCount} Poor</span></b> &nbsp;|&nbsp; " +
+                "<b><span style='color:#f97316;'> ${fairCount} Fair</span></b>" +
                 "<br>Verification: " +
                 "<b><span style='color:#22c55e;'>✅ ${verified} Verified</span></b> &nbsp;|&nbsp; " +
                 "<b><span style='color:#f97316;'>🔄 ${declared} Declared</span></b> &nbsp;|&nbsp; " +
@@ -3491,12 +3491,12 @@ def scheduledSummary() {
         else { postfix = tags }
     }
 
-    def body = "${prefix}📡 Device Health Summary\n"
+    def body = "${prefix} Device Health Summary\n"
 
     def sections = [
-        "Offline":   [emoji: "💀", enabled: settings?.notifyOffline   != false, list: []],
-        "Poor":      [emoji: "🔴", enabled: settings?.notifyPoor      != false, list: []],
-        "Fair":      [emoji: "🟠", enabled: settings?.notifyFair      != false, list: []],
+        "Offline":   [emoji: "", enabled: settings?.notifyOffline   != false, list: []],
+        "Poor":      [emoji: "", enabled: settings?.notifyPoor      != false, list: []],
+        "Fair":      [emoji: "", enabled: settings?.notifyFair      != false, list: []],
         "Good":      [emoji: "🟢", enabled: settings?.notifyGood      ?: false, list: []],
         "Excellent": [emoji: "🟢", enabled: settings?.notifyExcellent ?: false, list: []]
     ]
@@ -3579,10 +3579,10 @@ def infoPage(Map params = [:]) {
                       "<tr><td style='padding:4px 8px;'>⏳ Pending (n/3 samples)</td><td style='padding:4px 8px;'>Learning — sample count shown inline until 3 are collected</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟢 Excellent</td><td style='padding:4px 8px;'>Checking in within 1.5× of baseline</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>🟢 Good</td><td style='padding:4px 8px;'>Checking in within 3× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🟠 Fair</td><td style='padding:4px 8px;'>Checking in within 6× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🟠 Quiet</td><td style='padding:4px 8px;'>Fair health but reachability has been confirmed — device is idle, not unreachable. Two flavors: <b>verified reachable</b> (a real check-in, state event, or Hue/Konnected Bridge round-trip — trusted indefinitely, re-checked every Offline Threshold) and <b>responded to refresh — unconfirmed</b> (a plain Zigbee/Z-Wave refresh/ping that didn't throw, which isn't proof the device actually received it — see Verification section below). The unconfirmed kind is capped at 2× the Offline Threshold, after which it's forced to show a real Poor/Offline for a full Offline Threshold window before it can go Quiet again — so a device that never genuinely checks in can't be masked forever.</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>🔴 Poor</td><td style='padding:4px 8px;'>Checking in beyond 6× of baseline</td></tr>" +
-                      "<tr><td style='padding:4px 8px;'>💀 Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity unverifiable devices are capped at Poor.</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'> Fair</td><td style='padding:4px 8px;'>Checking in within 6× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'> Quiet</td><td style='padding:4px 8px;'>Fair health but reachability has been confirmed — device is idle, not unreachable. Two flavors: <b>verified reachable</b> (a real check-in, state event, or Hue/Konnected Bridge round-trip — trusted indefinitely, re-checked every Offline Threshold) and <b>responded to refresh — unconfirmed</b> (a plain Zigbee/Z-Wave refresh/ping that didn't throw, which isn't proof the device actually received it — see Verification section below). The unconfirmed kind is capped at 2× the Offline Threshold, after which it's forced to show a real Poor/Offline for a full Offline Threshold window before it can go Quiet again — so a device that never genuinely checks in can't be masked forever.</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'> Poor</td><td style='padding:4px 8px;'>Checking in beyond 6× of baseline</td></tr>" +
+                      "<tr><td style='padding:4px 8px;'> Offline</td><td style='padding:4px 8px;'>No activity for configured threshold (default ${settings?.offlineThresholdHours ?: 168}h). Low activity unverifiable devices are capped at Poor.</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>😴 Snoozed</td><td style='padding:4px 8px;'>Excluded from notifications for a set duration</td></tr>" +
                       "<tr><td style='padding:4px 8px;'>ℹ️ Low Activity</td><td style='padding:4px 8px;'>Monitored 7+ days with fewer than 3 samples — infrequently used device</td></tr>" +
                       "</table></div></div>"
@@ -3603,7 +3603,7 @@ def infoPage(Map params = [:]) {
                       "<b>Step 1 — State-change check:</b> If the device fired any state change event after its last recorded check-in and within the offline threshold window, it is marked ✅ State verified — no ping needed.<br><br>" +
                       "<b>Step 2 — Refresh / Ping:</b> If no recent state change is found, the app sends refresh() or ping() to the device directly.<br><br>" +
                       "<b>Hold-at-Fair:</b> When a pingable device enters Poor for the first time, it is held at Fair for one scan cycle while the ping is sent. If it responds it recovers on its own without ever reaching Poor. If it doesn't respond it is confirmed Poor on the next scan.<br><br>" +
-                      "<b>Quiet (verified reachable):</b> Fair-health devices that have confirmed they respond to ping or refresh are shown as 🟠 Quiet instead of Fair — idle but reachable. Used for Z-Wave and LAN devices whose <code>getLastActivity()</code> does not update reliably after command-triggered state reports.<br><br>" +
+                      "<b>Quiet (verified reachable):</b> Fair-health devices that have confirmed they respond to ping or refresh are shown as  Quiet instead of Fair — idle but reachable. Used for Z-Wave and LAN devices whose <code>getLastActivity()</code> does not update reliably after command-triggered state reports.<br><br>" +
                       "<b>Verification trust expiry (v1.5.7):</b> Quiet/verified status expires after your configured Offline Threshold (default 7 days). If a device goes quiet and the last successful ping is older than this window, trust is cleared and the app re-verifies from scratch — preventing dead battery devices from being permanently masked as Quiet.<br><br>" +
                       "<b>Auto-reset on recovery:</b> When a device recovers from Poor or Offline back to Good or Excellent, its verification status is automatically reset so it always gets a fresh attempt next time it drops.<br><br>" +
                       "<b>Hue devices (v1.5.8):</b> Add your Hue Bridge to monitored devices — the app refreshes the Bridge when any Hue device goes Poor or Offline. Because a Bridge poll returns each bulb's full current state regardless of whether it changed, a successful Bridge refresh now confirms the bulb as reachable immediately, instead of waiting for a Hubitat event that may never fire when the value is unchanged.<br><br>" +
@@ -3635,7 +3635,7 @@ def infoPage(Map params = [:]) {
                       "<b>v1.5.9</b> — Bug fix: quiet-but-fine Z-Wave/Zigbee devices stuck cycling Poor/Offline forever, with no bounded way to confirm a real outage<br>" +
                       "<span style='color:#475569;font-size:12px;'>Generic <code>device.refresh()</code>/<code>device.ping()</code> only proves the mesh accepted the command — Hubitat does not wait for or expose any delivery acknowledgment from the device, unlike a Hue Bridge or Konnected Panel refresh, which is a real network round-trip. Previously this meant a quiet-but-reachable Z-Wave/Zigbee switch (one that rarely changes state, so <code>getLastActivity()</code> never advances after a refresh) had no path to Quiet status at all — it would cycle Poor → Offline forever even though refresh kept succeeding every scan. Generic refresh/ping success now gets the same immediate Fair-cap (\"Quiet\") treatment Hue/Konnected already had, but tagged as <i>provisional (\"weak\")</i> trust rather than full confirmation, since a clean refresh call still isn't proof of actual delivery. Weak trust is capped at 2× your Offline Threshold (default 14 days) of continuous unconfirmed riding; once exceeded, trust is force-cleared and the device is guaranteed to show a real Poor/Offline for at least one full Offline Threshold (default 7 days) before weak trust can be granted again — so a device that never once genuinely checks in can't be hidden from you forever, while devices that are simply idle still get the same breathing room as before. Any genuine confirmation (a real check-in, a real state-change event, or a Hue/Konnected bridge round-trip) immediately upgrades a device to full (\"confirmed\") trust, which has no ceiling — it's already covered by the existing v1.5.7 periodic re-verification. The app page, Activity Summary, Problem Devices page, and web portal all now show a distinct badge/label for provisional (\"🔄 Verified (auto)\" / \"responded to refresh — unconfirmed\") vs. confirmed (\"✅ Verified\" / \"verified reachable\") status, so it's clear at a glance which devices have actually proven themselves. Also fixed: the web portal's per-device label never showed \"Quiet\" for Fair+verified devices — it only used that distinction for the summary counts and Active Issues filtering — so the portal card text now matches the Hubitat app page. Also fixed: the auto-reset-on-recovery block only wrote capability data back when clearing a failed ping status, silently leaving stale weak-trust timestamps in place on every other recovery.</span><br><br>" +
                       "<b>v1.5.8</b> — Bug fix: Hue/Konnected bulbs and sensors that sit unused for weeks stuck at Offline/Verifiable<br>" +
-                      "<span style='color:#475569;font-size:12px;'>Hue and Konnected verification works by refreshing the Bridge/Panel, not the device itself. A Bridge poll returns the full current state of every bulb whether or not it changed — but Hubitat's CoCoHue integration only emits a new event when a value actually changes. A bulb that's been off and untouched for weeks therefore never produced a fresh timestamp, so <code>pingWorks</code> never flipped to <code>true</code> even though the Bridge refresh itself was succeeding every time. A successful Bridge/Panel refresh is now treated as immediate proof of reachability — it stamps <code>pingWorks=true</code> directly instead of waiting for an event that may never come. <code>lastSeen</code> and learned baseline intervals are deliberately left untouched so this doesn't get recorded as a real check-in sample. The display now also updates within the same scan rather than the next one, and the old every-other-scan verification throttle was removed — so a single Force Scan fully resolves a Hue/Konnected device to ✅ Verified / 🟠 Quiet instead of needing 2-3 taps. Devices on the plain refresh/ping path still depend on the device itself responding, so those are unaffected by this change. Also fixed: Konnected devices that failed verification (no panel found, or panel refresh failed) weren't being marked Unverifiable — they now are. Active Issues (both the app page and the web portal) no longer lists Quiet/verified devices as problems — a confirmed-reachable idle device isn't an issue, so it's now grouped with healthy devices instead, and the Fair count in the summary no longer includes it.</span><br><br>" +
+                      "<span style='color:#475569;font-size:12px;'>Hue and Konnected verification works by refreshing the Bridge/Panel, not the device itself. A Bridge poll returns the full current state of every bulb whether or not it changed — but Hubitat's CoCoHue integration only emits a new event when a value actually changes. A bulb that's been off and untouched for weeks therefore never produced a fresh timestamp, so <code>pingWorks</code> never flipped to <code>true</code> even though the Bridge refresh itself was succeeding every time. A successful Bridge/Panel refresh is now treated as immediate proof of reachability — it stamps <code>pingWorks=true</code> directly instead of waiting for an event that may never come. <code>lastSeen</code> and learned baseline intervals are deliberately left untouched so this doesn't get recorded as a real check-in sample. The display now also updates within the same scan rather than the next one, and the old every-other-scan verification throttle was removed — so a single Force Scan fully resolves a Hue/Konnected device to ✅ Verified /  Quiet instead of needing 2-3 taps. Devices on the plain refresh/ping path still depend on the device itself responding, so those are unaffected by this change. Also fixed: Konnected devices that failed verification (no panel found, or panel refresh failed) weren't being marked Unverifiable — they now are. Active Issues (both the app page and the web portal) no longer lists Quiet/verified devices as problems — a confirmed-reachable idle device isn't an issue, so it's now grouped with healthy devices instead, and the Fair count in the summary no longer includes it.</span><br><br>" +
                       "<b>v1.5.7</b> — Bug fix: Stale ping verification masking dead battery devices<br>" +
                       "<span style='color:#475569;font-size:12px;'>In v1.5.6 the \"Quiet verified reachable\" label was introduced but <code>pingWorks=true</code> had no expiry. A device with a dead battery (e.g. a button or sensor) could be permanently held at Quiet and never escalate to Poor or Offline. Verification trust now expires after your configured Offline Threshold. When trust expires the app clears <code>pingWorks</code> and the fairHold gate gets a fresh re-verification attempt before escalating to Poor then Offline. No action needed — updates automatically on next scan.</span><br><br>" +
                       "<b>v1.5.6</b> — Added \"Quiet verified reachable\" display for Fair+verified devices. Added <code>lastKnownStateDate</code> tracking so verified refresh responses advance <code>lastSeen</code> even when <code>getLastActivity()</code> does not update (common in Z-Wave).<br><br>" +
