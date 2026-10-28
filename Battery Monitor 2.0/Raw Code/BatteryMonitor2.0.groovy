@@ -1,6 +1,6 @@
 /**
  * Battery Monitor 2.0
- * Version: 2.7.1
+ * Version: 2.7.3
  *
  * Tracks battery levels, drain, health, and replacements for selected devices.
  * Scans on a recurring schedule plus each device's own battery events. Health uses
@@ -8,6 +8,10 @@
  * and reacts faster to recent readings. Replacements are auto-detected from a confirmed upward jump.
  * Optional OAuth web portal serves a live dashboard.
  *
+ * v2.7.3 -- Info logging toggle (on by default) beside Debug logging. Off silences scan lines;
+ *    warnings and errors always log.
+ * v2.7.2 -- Web portal light mode: Portal theme setting (Dark default, Light, Follow device) plus a
+ *    ◐ button on the portal that each browser remembers. Dark rules stay under .bm-dark.
  * v2.7.1 -- Dark mode: in-hub pages use the hub's theme colors (var() tokens with fallbacks, tinted
  *    pills and messages); legacyLightThemeCss() covers pre-2.5.3 firmware (pattern from Reolink 1.6.13).
  *    The web portal keeps its own dark theme.
@@ -28,7 +32,7 @@
 import groovy.transform.Field
 
 definition(
-    name: "Battery Monitor Modified",
+    name: "Battery Monitor 2.0",
     namespace: "jdthomas24",
     author: "Jdthomas24",
     description: "Advanced Hubitat battery monitoring with analytics, trends and replacement tracking. Recurring scan schedule, confidence-weighted health, EWMA smoothing.",
@@ -41,7 +45,7 @@ definition(
     oauth: true
 )
 
-@Field static final String APP_VERSION = "2.7.1"
+@Field static final String APP_VERSION = "2.7.3"
 @Field static final String COMMUNITY_URL = "https://community.hubitat.com/t/release-battery-monitor-2-0/162329"
 @Field static final String COFFEE_URL = "https://paypal.me/jdthomas24?locale.x=en_US&country.x=US"
 @Field static final String DEFAULT_TIP_TOPIC = "best"
@@ -167,8 +171,12 @@ def updated() {
     syncCliffDefaults()
 }
 
+// Unset on upgrade counts as on
+def infoEnabled() { return settings?.infoMode != false }
+def logInfo(msg)  { if (infoEnabled()) log.info msg }
+
 def disableDebugLogging() {
-    log.info "Battery Monitor: auto-disabling debug logging after 30 minutes"
+    logInfo "Battery Monitor: auto-disabling debug logging after 30 minutes"
     app.updateSetting("debugMode", [value: false, type: "bool"])
 }
 
@@ -431,6 +439,8 @@ def mainPage() {
 
         helpAndSupportSection()
         section {
+            input "infoMode", "bool", title: "Info logging <span style='font-size:13px;color:var(--text-color-secondary, #6b7280);'>· scan lines, warnings always log</span>",
+                  defaultValue: true, submitOnChange: true
             input "debugMode", "bool", title: "Debug logging <span style='font-size:13px;color:var(--text-color-secondary, #6b7280);'>· turns off after 30 minutes</span>",
                   defaultValue: false, submitOnChange: true
         }
@@ -531,6 +541,9 @@ def portalPage() {
                 paragraph rawHtml: true, "<div class='bm-msg bm-msg-info' style='word-break:break-all;'>" +
                     "<b>Cloud (anywhere):</b><br><a href='${cloudUrl}' target='_blank'>${cloudUrl}</a><br><br>" +
                     "<b>Local (at home):</b><br><a href='${localUrl}' target='_blank'>${localUrl}</a></div>"
+                input "portalTheme", "enum", title: "Portal theme", options: ["dark": "Dark", "light": "Light", "auto": "Follow device"],
+                    defaultValue: "dark", required: false, width: 4
+                paragraph rawHtml: true, "<div class='bm-hint'>The starting look for everyone. The ◐ button on the portal switches it, and each browser remembers its choice.</div>"
             } else {
                 def hubIp = location?.hub?.localIP ?: ""
                 paragraph rawHtml: true, "<div class='bm-msg bm-msg-err'><b>OAuth isn't enabled yet.</b> To turn on the portal:<br><br>" +
@@ -598,7 +611,7 @@ def scanAllDevices() {
     def devList = (autoDevices ?: []).findAll { !isIgnored(it) }
     if (!devList) return
     if (debugMode) log.debug "Running scheduled battery scan for ${devList.size()} device(s)"
-//    log.info "Battery Monitor: scan started — ${devList.size()} device(s)"
+    logInfo "Battery Monitor: scan started — ${devList.size()} device(s)"
 
     confirmPendingReplacements()
 
@@ -625,7 +638,7 @@ def scanAllDevices() {
     if (poor.size()  > 0) msg += " Low battery: ${poor.join(', ')}."
     if (stale.size() > 0) msg += " Stale: ${stale.join(', ')}."
     state.lastScanAt = now()
-//    log.info "Battery Monitor: scan complete — ${devList.size()} device(s) processed"
+    logInfo "Battery Monitor: scan complete — ${devList.size()} device(s) processed"
 }
 
 def reportScheduler() {
@@ -657,9 +670,6 @@ def shouldRunWeekly() {
     return false
 }
 
-// ============================================================
-// ===================== SCHEDULED SUMMARY ===================
-// ============================================================
 def scheduledSummary() {
     // v2.5.31→v2.5.32: Fix — enablePush previously only gated sendPush(); notifyDevices and
     // pushoverDevices kept firing even with the toggle off (and stayed hidden/uneditable in the
@@ -678,16 +688,16 @@ def scheduledSummary() {
     if (!devList) return false
 
     def categories = [
-        "Poor":      [list: [], enabled: notifyPoor      != null ? notifyPoor      : true],
-        "Fair":      [list: [], enabled: notifyFair      != null ? notifyFair      : true],
-        "Good":      [list: [], enabled: notifyGood      != null ? notifyGood      : false],
-        "Excellent": [list: [], enabled: notifyExcellent != null ? notifyExcellent : false]
+        "🔴 Poor":      [list: [], enabled: notifyPoor      != null ? notifyPoor      : true],
+        "🟠 Fair":      [list: [], enabled: notifyFair      != null ? notifyFair      : true],
+        "🟢 Good":      [list: [], enabled: notifyGood      != null ? notifyGood      : false],
+        "🟢 Excellent": [list: [], enabled: notifyExcellent != null ? notifyExcellent : false]
     ]
 
     devList.each { device ->
         if (isBatteryDead(device)) return
         def lvl = device.currentValue("battery") != null ? device.currentValue("battery").toInteger() : 100
-        def cat = lvl >= 100 ? "Excellent" : lvl > 70 ? "Good" : lvl > 25 ? "Fair" : "Poor"
+        def cat = lvl >= 100 ? "🟢 Excellent" : lvl > 70 ? "🟢 Good" : lvl > 25 ? "🟠 Fair" : "🔴 Poor"
         categories[cat].list << [device: device, name: device.displayName.trim(), level: lvl]
     }
 
@@ -726,7 +736,7 @@ def scheduledSummary() {
     }
 
     def timestamp = new Date().format("MM/dd HH:mm", location.timeZone)
-    def body      = ""
+    def body      = "${prefix}🔋 Battery Summary — ${timestamp}\n"
 
     def staleDevices = devList.findAll { isStale(it) }.collect {
         def last        = getLastActivityTime(it)
@@ -737,53 +747,53 @@ def scheduledSummary() {
     categories.each { cat, data ->
         if (data.enabled) {
             if (data.list) {
-                body += "\n<u>&nbsp&nbsp${cat}&nbsp&nbsp</u>\n"
+                body += "\n${cat}:\n"
                 data.list.each { dev ->
-                    if (cat == "Poor") {
+                    if (cat == "🔴 Poor") {
                         def info    = getCatalogBatteryInfo(dev.device)
                         def infoStr = info ? " (${info})" : ""
-                        body += "${dev.level}% ${dev.name}\n"
+                        body += "• ${dev.level}% ${dev.name}${infoStr}\n"
                     } else {
-                        body += "${dev.level}% ${dev.name}\n"
+                        body += "• ${dev.level}% ${dev.name}\n"
                     }
-                }    
+                }
             } else {
-                body += "\n<u>&nbsp&nbsp${cat}&nbsp&nbsp</u>\nNone\n"
+                body += "\n${cat}: None\n"
             }
         }
     }
 
     if (notifyHighDrain != null ? notifyHighDrain : true) {
         if (highDrainList) {
-            body += "\n<u>&nbsp&nbspHigh Drain&nbsp&nbsp</u>\n"
-            highDrainList.each { dev -> body += "${dev.health} (${dev.drain}%) ${dev.name} \n" }
+            body += "\n⚠️ High Drain (Fair/Poor):\n"
+            highDrainList.each { dev -> body += "• ${dev.health} (${dev.drain}%) ${dev.name} (${dev.level}%)\n" }
         } else {
-            body += "\n<u>&nbsp&nbspHigh Drain&nbsp&nbsp</u>\nNone\n"
+            body += "\n⚠️ High Drain (Fair/Poor): None\n"
         }
     }
 
     if (notifyStale != null ? notifyStale : true) {
         if (staleDevices) {
-            body += "\n<u>&nbsp&nbspStale Devices&nbsp&nbsp</u>\n"
+            body += "\n⚠️ Stale Devices:\n"
             staleDevices.each { d ->
- //               def info    = getCatalogBatteryInfo(d.device)
- //               def infoStr = info ? " (${info})" : ""
-                body += "${d.name} - Inactive ${d.inactiveStr}\n"
+                def info    = getCatalogBatteryInfo(d.device)
+                def infoStr = info ? " (${info})" : ""
+                body += "• ${d.name}${infoStr} — inactive ${d.inactiveStr}\n"
             }
         } else {
-            body += "\n&nbsp&nbspStale Devices&nbsp&nbsp\nNone\n"
+            body += "\n⚠️ Stale Devices: None\n"
         }
     }
 
     if (deadBatteryList) {
-        body += "\n&nbsp&nbspDead Batteries&nbsp&nbsp\n"
+        body += "\n🪫 Dead Batteries:\n"
         deadBatteryList.each { dev ->
             def foundDev = dev.deviceId
                 ? devList.find { it.id == dev.deviceId }
                 : devList.find { it.displayName.trim() == dev.name }
             def info    = getCatalogBatteryInfo(foundDev)
             def infoStr = info ? " (${info})" : ""
-            body += "${dev.name}\n"
+            body += "• ${dev.name}${infoStr}\n"
         }
     }
 
@@ -812,7 +822,7 @@ def scheduledSummary() {
     if (settings?.pushoverDevices) settings.pushoverDevices.each { it.deviceNotification(pushoverBody) }
     if (settings?.notifyDevices)   notifyDevices.each { it.deviceNotification(plainBody) }
 
-    def poorCount  = categories["Poor"]?.list?.size() ?: 0
+    def poorCount  = categories["🔴 Poor"]?.list?.size() ?: 0
     def staleCount = staleDevices?.size() ?: 0
     def deadCount  = deadBatteryList?.size() ?: 0
     return true
@@ -1454,8 +1464,10 @@ def logReplacement(device, newLevel, manual = false) {
 def getPortalRedirectHtml(delayMs, msgText) {
     return "<!DOCTYPE html><html><head><meta charset='UTF-8'>" +
            "<script>setTimeout(function(){window.location.href='dashboard?access_token=${state.accessToken}';},${delayMs});</script>" +
-           "</head><body style='background:#0d0d0d;color:#fff;text-align:center;padding-top:100px;font-family:sans-serif;'>" +
-           "<h3>🔄 Refreshing...</h3><p style='color:#666;'>${msgText}</p></body></html>"
+           "<style>body{background:#0d0d0d;color:#fff;text-align:center;padding-top:100px;font-family:sans-serif;}p{color:#888;}" +
+           "body.bm-light{background:#f3f4f6;color:#111827;}body.bm-light p{color:#6b7280;}</style>" +
+           "</head><body class='${portalThemeClass()}'>${portalThemeScript()}" +
+           "<h3>🔄 Refreshing...</h3><p>${msgText}</p></body></html>"
 }
 
 // ============================================================
@@ -1486,12 +1498,16 @@ def serveDashboardPage() {
 <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css'>
 <style>${portalCss()}</style>
 <script>setTimeout(function(){ location.reload(); }, 120000);</script>
-</head><body>
-<div class='bm-portal bm-dark'>
+</head><body class='${portalThemeClass()}'>
+${portalThemeScript()}
+<div class='bm-portal'>
   <div class='bm-portal-head'>
     <div><div class='bm-portal-title'>🔋 Battery Monitor</div>
       <div class='bm-portal-sub'>Updated ${ts} · refreshes every 2 min</div></div>
-    <a class='bm-scan' href='refresh?access_token=${state.accessToken}'><i class='fa-solid fa-rotate-right'></i>Force scan</a>
+    <div class='bm-portal-actions'>
+      <button type='button' class='bm-theme' onclick='bmToggleTheme()' title='Switch light or dark' aria-label='Switch light or dark'><i class='fa-solid fa-circle-half-stroke'></i></button>
+      <a class='bm-scan' href='refresh?access_token=${state.accessToken}'><i class='fa-solid fa-rotate-right'></i>Force scan</a>
+    </div>
   </div>
   ${body}
   <div class='bm-portal-foot'>Battery Monitor v${APP_VERSION} · jdthomas24</div>
@@ -1504,17 +1520,50 @@ def serveDashboardPage() {
     }
 }
 
-/** Dark theme for the standalone portal; shares markup with the Summary page. */
+// Portal theme: body class bm-dark or bm-light. The summary markup's own styles are the light look (var() fallbacks);
+// bm-dark overrides them. A browser's saved choice (◐ button) wins over the app setting.
+private String portalThemeClass() { (settings.portalTheme ?: "dark") == "light" ? "bm-light" : "bm-dark" }
+
+private String portalThemeScript() {
+    String pref = (settings.portalTheme ?: "dark").toString()
+    """<script>
+(function(){
+  var pref = '${pref}', saved = null;
+  try { saved = localStorage.getItem('bmPortalTheme'); } catch (e) {}
+  var dark = saved ? saved === 'dark' : pref === 'auto' ? !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) : pref !== 'light';
+  function apply(d) { document.body.className = d ? 'bm-dark' : 'bm-light'; }
+  apply(dark);
+  window.bmToggleTheme = function() {
+    dark = !dark; apply(dark);
+    try { localStorage.setItem('bmPortalTheme', dark ? 'dark' : 'light'); } catch (e) {}
+  };
+})();
+</script>"""
+}
+
+/** Portal shell in both themes; shares markup with the Summary page. */
 private String portalCss() {
     """
-  body { margin: 0; padding: 16px; background: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-  .bm-portal { max-width: 1000px; margin: 0 auto; background: #151515; border-radius: 12px; padding: 18px 20px; box-sizing: border-box; }
+  body { margin: 0; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  body.bm-dark { background: #0d0d0d; }
+  body.bm-light { background: #f3f4f6; }
+  .bm-portal { max-width: 1000px; margin: 0 auto; border-radius: 12px; padding: 18px 20px; box-sizing: border-box; }
+  .bm-dark .bm-portal { background: #151515; }
+  .bm-light .bm-portal { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   .bm-portal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-  .bm-portal-title { font-size: 20px; font-weight: 600; color: #fff; }
+  .bm-portal-actions { display: flex; align-items: center; gap: 8px; }
+  .bm-portal-title { font-size: 20px; font-weight: 600; }
+  .bm-dark .bm-portal-title { color: #fff; }
+  .bm-light .bm-portal-title, .bm-light .bm-devname { color: #111827; font-weight: 600; }
   .bm-portal-sub { font-size: 12px; color: #8b8b8b; margin-top: 2px; }
+  .bm-light .bm-portal-sub { color: #6b7280; }
+  .bm-theme { width: 34px; height: 34px; border-radius: 6px; border: 1px solid #3a3a3a; background: transparent; color: #d1d5db; font-size: 15px; cursor: pointer; }
+  .bm-light .bm-theme { border-color: #cfd6de; color: #374151; }
+  .bm-light .bm-toolbar input { background: #fff; color: #111827; }
   .bm-scan { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; background: #1f618d; color: #fff; text-decoration: none; font-size: 14px; font-weight: 600; }
   .bm-scan:hover { background: #1a5276; }
   .bm-portal-foot { text-align: center; font-size: 11px; color: #555; margin-top: 18px; }
+  .bm-light .bm-portal-foot { color: #9ca3af; }
   .bm-dark .bm-wrap { color: #e5e7eb; }
   .bm-dark .bm-devname { color: #fff; font-weight: 600; }
   .bm-dark .bm-stat { background: #1e1e1e; }
@@ -2968,9 +3017,10 @@ private List tipsTopics() {
             ],
             warning: "<b>Rechargeable lithium cells can hold near-full, then drop quickly.</b><br>A sudden fall after weeks of stable readings is often the chemistry, not the app. Turn on cliff detection for those devices."],
         [id: "logging", label: "Scan logging", title: "Scan messages in the logs", group: "Troubleshooting", icon: "pi-file",
-            body: "<p>Each scheduled scan logs a <b>scan started</b> and <b>scan complete</b> line at info level. This is intentional, " +
+            body: "<p>Each scheduled scan logs a <b>scan started</b> and <b>scan complete</b> line at info level, " +
                 "so you can confirm scans are running without turning on debug logging.</p>" +
-                "<p><b>Debug logging</b> (the toggle at the bottom of the main page) adds step-by-step detail and turns itself off after 30 minutes.</p>"]
+                "<p><b>Info logging</b> (bottom of the main page) is on by default; turn it off to keep your logs quiet. Warnings and errors still log. " +
+                "<b>Debug logging</b> adds step-by-step detail and turns itself off after 30 minutes.</p>"]
     ]
 }
 
